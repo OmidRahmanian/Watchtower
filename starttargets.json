@@ -1,0 +1,94 @@
+{
+    "lastminute.com.au": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "mi.lastminute.com.au",
+            "mtx.lastminute.com.au",
+            "smtx.lastminute.com.au"
+        ]
+    },
+    "cheaptickets.com": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "faq-lab.cheaptickets.com",
+            "faq.cheaptickets.com",
+            "groups.cheaptickets.com",
+            "link.mailer.cheaptickets.com",
+            "login.cheaptickets.com",
+            "mi.cheaptickets.com",
+            "refer.cheaptickets.com",
+            "secure.cheaptickets.com",
+            "track.cheaptickets.com"
+        ]
+    },
+    "wotif.com": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "groups.wotif.com",
+            "link.wotif.com",
+            "res.ac.wotif.com",
+            "smobile.wotif.com",
+            "w.smobile.wotif.com"
+        ]
+    },
+    "travelocity.ca": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "click.e.travelocity.ca",
+            "fr.groups.travelocity.ca",
+            "groups.travelocity.ca",
+            "om.travelocity.ca",
+            "oms.travelocity.ca"
+        ]
+    },
+    "travelocity.com": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "br.ac.travelocity.com",
+            "groups.travelocity.com",
+            "mi.travelocity.com",
+            "om.travelocity.com",
+            "oms.travelocity.com",
+            "thingstodo.travelocity.com",
+            "track.travelocity.com",
+            "view.e.travelocity.com"
+        ]
+    },
+    "carrentals.com": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "dbmanalytics.carrentals.com"
+        ]
+    },
+    "expediapartnercentral.com": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "discoveryhub.expediapartnersolutions.com",
+            "gco-get.expediapartnersolutions.com",
+            "gco.expediapartnersolutions.com",
+            "info.expediapartnersolutions.com",
+            "status.expediapartnersolutions.com",
+            "support.expediapartnersolutions.com",
+            "sure.expediapartnersolutions.com",
+            "taap-ui-bundles-test.expediapartnersolutions.com",
+            "taap-ui-bundles.expediapartnersolutions.com",
+            "taapacademy.expediapartnersolutions.com"
+        ]
+    },
+    "vrbo.com": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "li.vrbo.com",
+            "media.vrbo.com",
+            "om.vrbo.com",
+            "community.vrbo.com",
+            "trk.vrbo.com"
+        ]
+    },
+    "lastminute.co.nz": {
+        "report_url": "https://hackerone.com/expediagroup_bbp/policy_scopes",
+        "out_of_scope": [
+            "res.ac.lastminute.co.nz"
+        ]
+    }
+}

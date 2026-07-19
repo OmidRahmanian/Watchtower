@@ -1,0 +1,14 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Local scanner output and databases
+data/
+files/
+last-nuclei/
+output/

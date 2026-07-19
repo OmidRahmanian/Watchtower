@@ -1,0 +1,82 @@
+{
+    "dell.com": {
+        "report_url": "https://bugcrowd.com/dell-com",
+        "out_of_scope": [
+            "prm.dell.com",
+            "prmdev.dell.com",
+            "prmstg.dell.com",
+            "prm-ps3dmz.dell.com",
+            "educate.dell.com",
+            "console.dell.com",
+            "console-test.dell.com"
+        ]
+    },
+    "delltechnologies.com": {
+        "report_url": "https://bugcrowd.com/dell-com",
+        "out_of_scope": []
+    },
+    "walmart.com": {
+        "report_url": "https://corporate.walmart.com/article/responsible-disclosure-policy",
+        "out_of_scope": []
+    },
+    "tesla.com": {
+        "report_url": "https://bugcrowd.com/tesla",
+        "out_of_scope": []
+    },
+    "tesla.cn": {
+        "report_url": "https://bugcrowd.com/tesla",
+        "out_of_scope": []
+    },
+    "teslamotors.com": {
+        "report_url": "https://bugcrowd.com/tesla",
+        "out_of_scope": []
+    },
+    "tesla.services": {
+        "report_url": "https://bugcrowd.com/tesla",
+        "out_of_scope": []
+    },
+    "teslainsuranceservices.com": {
+        "report_url": "https://bugcrowd.com/tesla",
+        "out_of_scope": []
+    },
+    "solarcity.com": {
+        "report_url": "https://bugcrowd.com/tesla",
+        "out_of_scope": []
+    },
+    "hilton.com": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "hiltonlocalbiz.com": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "hilton.com.tr": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "hiltonbusinessonline.com": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "hiltonhotels.jp": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "hilton.io": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "popjam.com": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "epicgames.com": {
+        "report_url": "",
+        "out_of_scope": []
+    },
+    "apple.com": {
+        "report_url": "https://security.apple.com/bounty/",
+        "out_of_scope": []
+    }
+}

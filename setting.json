@@ -1,0 +1,63 @@
+{
+    "subfinder": {
+        "time": "hours",
+        "value": "3",
+        "status": "enable"
+    },
+    "crt": {
+        "time": "hours",
+        "value": "3",
+        "status": "enable"
+    },
+    "securitytrials": {
+        "time": "hours",
+        "value": "3",
+        "status": "enable"
+    },
+    "static_resolve": {
+        "time": "days",
+        "value": "3",
+        "status": "enable"
+    },
+    "all_resolve": {
+        "time": "hours",
+        "value": "6",
+        "status": "enable"
+    },
+    "dynamic_resolve": {
+        "time": "weeks",
+        "value": "1",
+        "status": "enable"
+    },
+    "httpx": {
+        "time": "days",
+        "value": "1",
+        "status": "enable"
+    },
+    "change_statuscode":{
+        "status":"enable"
+    },
+    "change_title":{
+        "status":"disable"
+    },
+    "change_tech":{
+        "status":"disable"
+    },
+    "change_body":{
+        "status":"enable"
+    },
+    "new_template": {
+        "time": "days",
+        "value": "1",
+        "status": "enable"
+    },
+    "sendmessage": {
+        "status": "enable"
+    },
+    "new_sub_nuclei": {
+        "status": "enable"
+    },
+    "nuclei_command": {
+        "command": "-pt http -et technologies -eid http-missing-security-headers,waf-detect"
+    }
+}
