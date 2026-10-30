@@ -32,6 +32,7 @@ from uuid import UUID
 
 from watchtower.api import queries, schemas
 from watchtower.api.runs import FINISHED_RUN_STATUSES, RunsPort, default_runs
+from watchtower.api.storage import default_evidence_root
 from watchtower.config import load_settings
 from watchtower.config.settings import Settings
 from watchtower.domain.errors import (
@@ -595,8 +596,6 @@ def cmd_finding_retest(app: App, args: argparse.Namespace) -> int:
 
 
 def _evidence_store(app: App) -> FilesystemBlobStore:
-    from watchtower.api.app import default_evidence_root
-
     return FilesystemBlobStore(default_evidence_root(app.settings))
 
 

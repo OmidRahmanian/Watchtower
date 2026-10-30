@@ -117,7 +117,7 @@ def test_captured_content_cannot_drive_the_terminal(run_cli, database, member, p
 def test_evidence_prints_redacted_and_saves_privately(run_cli, database, member, project_id, tmp_path, monkeypatch):
     from watchtower.services.evidence_store import FilesystemBlobStore
 
-    monkeypatch.setenv("WATCHTOWER_EVIDENCE_DIR", str(tmp_path / "evidence"))
+    monkeypatch.setattr(cli, "default_evidence_root", lambda settings: tmp_path / "evidence")
     blobs = FilesystemBlobStore(tmp_path / "evidence")
     env = b"APP_ENV=prod\nDB_PASSWORD=hunter2-prod\n"
     row = seed_finding(database, project_id, Scanner(), HttpResponse(200, (), env), START, blobs=blobs,

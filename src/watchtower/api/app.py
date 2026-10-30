@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +40,7 @@ from watchtower.api.pagination import (
     encode_cursor,
 )
 from watchtower.api.runs import RunsPort, default_runs
+from watchtower.api.storage import default_evidence_root
 from watchtower.config.settings import Settings
 from watchtower.domain.errors import (
     AuthenticationFailed,
@@ -75,12 +75,6 @@ CONTENT_SECURITY_POLICY = (
 def default_frontend_root() -> Path:
     packaged = Path(watchtower.__file__).resolve().parent / "_frontend"
     return packaged if packaged.is_dir() else Path(__file__).resolve().parents[3] / "frontend"
-
-
-def default_evidence_root(settings: Settings) -> Path:
-    pipeline = getattr(settings, "pipeline", None)
-    configured = getattr(pipeline, "evidence_root", None)
-    return Path(configured or os.environ.get("WATCHTOWER_EVIDENCE_DIR", "data/evidence"))
 
 
 @dataclass
