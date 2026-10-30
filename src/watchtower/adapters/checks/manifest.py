@@ -20,9 +20,20 @@ from pathlib import Path
 import re
 import sys
 
+import watchtower
 from watchtower.domain.models import Severity
 
-RULES_ROOT = Path(os.environ.get("WATCHTOWER_RULES_DIR") or Path(__file__).resolve().parents[4] / "rules")
+
+
+def default_rules_root() -> Path:
+    """``WATCHTOWER_RULES_DIR``, else the rules packaged in the wheel, else the source checkout."""
+    if os.environ.get("WATCHTOWER_RULES_DIR"):
+        return Path(os.environ["WATCHTOWER_RULES_DIR"])
+    packaged = Path(watchtower.__file__).resolve().parent / "_rules"
+    return packaged if packaged.is_dir() else Path(__file__).resolve().parents[4] / "rules"
+
+
+RULES_ROOT = default_rules_root()
 RULE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 SEVERITIES = tuple(severity.value for severity in Severity)
 CONFIDENCES = ("tentative", "firm", "confirmed")

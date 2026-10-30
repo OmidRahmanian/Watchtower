@@ -11,9 +11,9 @@ Only a relevant, conclusive negative retest can resolve a finding. Routine
 scan negatives, failed checks, and inconclusive checks are recorded but never
 change the workflow status. A detection after resolution reopens the finding.
 
-``FindingRecord`` holds the full state. ``to_new_finding`` maps it onto the
-shared ``NewFinding`` record, with everything the shared schema has no
-column for kept under ``details``.
+``FindingRecord`` holds the full state. ``to_new_finding`` and
+``from_finding`` map it to and from the shared records, with everything the
+shared schema has no column for kept under ``details``.
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ from typing import Any
 from uuid import UUID
 
 from watchtower.adapters.checks.base import CheckResult, Endpoint, Outcome, utcnow
-from watchtower.domain.models import FindingStatus, NewFinding, Severity
+from watchtower.domain.models import AssetKind, Finding, FindingStatus, NewFinding, Severity
+from watchtower.domain.repositories import ProjectUnitOfWork
+from watchtower.domain.targets import parse_target
 from watchtower.services.evidence import EvidenceStore
 
 FINGERPRINT_VERSION = "v1"
@@ -129,6 +131,33 @@ class FindingRecord:
                           observed_at=self.last_seen, scope_revision_id=scope_revision_id)
 
 
+    @classmethod
+    def from_finding(cls, finding: Finding) -> FindingRecord:
+        """Rebuild the full record from a stored shared ``Finding``."""
+        details = finding.details
+
+        def moment(value: str | None) -> datetime | None:
+            return datetime.fromisoformat(value) if value else None
+
+        detection = details["detection"]
+        target = details["target"]
+        return cls(
+            fingerprint=finding.fingerprint, check_id=details["check_id"],
+            target=Endpoint(target["host"], target["scheme"], target["port"], target.get("resolved_ip")),
+            location=details["location"], variant=details["variant"], title=finding.title,
+            severity=finding.severity, confidence=details["confidence"], cves=tuple(details["cves"]),
+            rule_version=details["rule_version"], first_seen=moment(details["first_seen"]),
+            last_seen=moment(details["last_seen"]), status=finding.status,
+            status_changed_at=finding.status_changed_at,
+            detection=Detection(detection["state"], Outcome(detection["last_outcome"]),
+                                moment(detection["last_outcome_at"]), moment(detection["last_conclusive_at"])),
+            priority=details.get("priority"), occurrences=details["occurrences"],
+            recurrences=details["recurrences"], first_evidence=details["first_evidence"],
+            recent_evidence=list(details["recent_evidence"]), resolution_evidence=details["resolution_evidence"],
+            retest_requested_at=moment(details["retest_requested_at"]), history=list(details["history"]),
+        )
+
+
 class InMemoryFindingStore:
     def __init__(self) -> None:
         self._items: dict[str, FindingRecord] = {}
@@ -146,8 +175,37 @@ class InMemoryFindingStore:
         return len(self._items)
 
 
+class RepositoryFindingStore:
+    """Keeps records in the shared ``FindingRepository``.
+
+    ``upsert`` replaces details wholesale, so every write sends the complete
+    record that was read back with ``get_by_fingerprint`` and changed here.
+    """
+
+    def __init__(self, uow: ProjectUnitOfWork, scope_revision_id: UUID | None = None,
+                 asset_for: Callable[[Endpoint], UUID] | None = None) -> None:
+        self.uow = uow
+        self.scope_revision_id = scope_revision_id
+        self.asset_for = asset_for or self._hostname_asset
+
+    def _hostname_asset(self, target: Endpoint) -> UUID:
+        kind = AssetKind.IP_ADDRESS if parse_target(target.host).is_ip else AssetKind.HOSTNAME
+        asset, _ = self.uow.assets.upsert(kind, target.host, scope_revision_id=self.scope_revision_id)
+        return asset.id
+
+    def get(self, key: str) -> FindingRecord | None:
+        found = self.uow.findings.get_by_fingerprint(key)
+        return FindingRecord.from_finding(found) if found else None
+
+    def put(self, finding: FindingRecord) -> None:
+        stored, _ = self.uow.findings.upsert(finding.to_new_finding(self.asset_for(finding.target),
+                                                                    self.scope_revision_id))
+        if stored.status != finding.status:
+            self.uow.findings.set_status(stored.id, finding.status)
+
+
 class FindingService:
-    def __init__(self, store: InMemoryFindingStore | None = None, evidence: EvidenceStore | None = None,
+    def __init__(self, store: InMemoryFindingStore | RepositoryFindingStore | None = None, evidence: EvidenceStore | None = None,
                  canonical_id: Callable[[str], str] = lambda rule_id: rule_id) -> None:
         self.store = store if store is not None else InMemoryFindingStore()
         self.evidence = evidence if evidence is not None else EvidenceStore()

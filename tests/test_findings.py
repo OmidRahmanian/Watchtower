@@ -6,9 +6,11 @@ from uuid import uuid4
 
 from watchtower.adapters.checks import Endpoint, build_checks, load_manifest
 from watchtower.adapters.checks.base import HttpResponse
-from watchtower.domain.models import FindingStatus, NewFinding, Severity, StoredBlob
+from watchtower.domain.models import Asset, AssetKind, Finding, FindingStatus, NewFinding, Severity, StoredBlob
 from watchtower.services.evidence import MEDIA_TYPE, to_new_evidence
-from watchtower.services.findings import FindingError, FindingService, IrrelevantRetest, fingerprint
+from watchtower.services.findings import (
+    FindingError, FindingService, IrrelevantRetest, RepositoryFindingStore, fingerprint,
+)
 
 START = datetime(2026, 10, 30, 12, tzinfo=UTC)
 GIT_CONFIG = b"[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
@@ -162,6 +164,59 @@ class FindingLifecycleTests(unittest.TestCase):
         for reply in (GONE, BUSY, OSError("down")):
             self.assertIsNone(service.ingest(self.scanner.run(reply, START)))
         self.assertEqual(len(service.store), 0)
+
+
+class FakeUnitOfWork:
+    """Mimics the shared repositories: upsert replaces details and keeps status."""
+
+    def __init__(self):
+        self.rows, self.asset_values = {}, []
+        self.findings, self.assets = self, self
+
+    def upsert(self, *args, **kwargs):
+        if isinstance(args[0], NewFinding):
+            new, row = args[0], self.rows.get(args[0].fingerprint)
+            stored = Finding(row.id if row else uuid4(), uuid4(), new.asset_id, new.fingerprint, new.title,
+                             new.severity, row.status if row else FindingStatus.OPEN, new.source,
+                             json.loads(json.dumps(dict(new.details))), START, new.observed_at,
+                             row.status_changed_at if row else START)
+            self.rows[new.fingerprint] = stored
+            return stored, row is None
+        kind, value = args
+        self.asset_values.append((kind, value))
+        return Asset(uuid4(), uuid4(), kind, value, START, START), True
+
+    def get_by_fingerprint(self, key):
+        return self.rows.get(key)
+
+    def set_status(self, finding_id, status):
+        key = next(key for key, row in self.rows.items() if row.id == finding_id)
+        self.rows[key] = replace(self.rows[key], status=status, status_changed_at=START)
+        return self.rows[key]
+
+
+class RepositoryStoreTests(unittest.TestCase):
+    def test_lifecycle_survives_round_trips_through_shared_records(self):
+        uow, scanner = FakeUnitOfWork(), Scanner()
+        service = FindingService(RepositoryFindingStore(uow), canonical_id=scanner.ruleset.canonical_id)
+        key = service.ingest(scanner.run(EXPOSED, START)).fingerprint
+        service.ingest(scanner.run(EXPOSED, START + timedelta(hours=1), ip="198.51.100.7"))
+        service.request_retest(key, "analyst", START + timedelta(hours=2))
+        service.apply_retest(key, scanner.run(BUSY, START + timedelta(hours=3)))
+        self.assertEqual(service.get(key).retest_requested_at, START + timedelta(hours=2))
+        service.apply_retest(key, scanner.run(GONE, START + timedelta(hours=4)))
+        self.assertEqual(uow.rows[key].status, FindingStatus.RESOLVED)
+        service.ingest(scanner.run(EXPOSED, START + timedelta(hours=5)))
+
+        finding = service.get(key)
+        self.assertEqual(len(uow.rows), 1)
+        self.assertEqual((uow.rows[key].status, finding.status), (FindingStatus.OPEN, FindingStatus.OPEN))
+        self.assertEqual((finding.occurrences, finding.recurrences), (3, 1))
+        self.assertEqual(finding.detection.state, "present")
+        self.assertEqual(finding.target.resolved_ip, "203.0.113.10")
+        self.assertEqual([event["event"] for event in finding.history][-3:], ["retest_inconclusive", "resolved",
+                                                                               "reopened"])
+        self.assertEqual(set(uow.asset_values), {(AssetKind.HOSTNAME, "shop.example.com")})
 
 
 class FingerprintTests(unittest.TestCase):
