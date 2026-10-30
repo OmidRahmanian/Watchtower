@@ -1,0 +1,70 @@
+{
+  "manifest_version": 1,
+  "rules": [
+    {
+      "id": "vulnerable-component",
+      "version": "1.0.0",
+      "path": "component/vulnerable-component.json",
+      "sha256": "8f492f217e4c0d9771359c0d898ba990d52dbb6f2980cc1c1b226d0b69a2dd76",
+      "aliases": [],
+      "review": {
+        "status": "pending",
+        "reviewer": "agent-03 (Claude); pending maintainer sign-off",
+        "date": "2026-10-30",
+        "notes": "Sends no traffic. Matches the source rule's extracted banner against advisories; suffixed versions stay tentative."
+      }
+    },
+    {
+      "id": "directory-listing",
+      "version": "1.0.0",
+      "path": "http/directory-listing.json",
+      "sha256": "14ce093ea3ae9e0dee6c29d35653b7310ff9c7d78e506c5466f78a1afd4f3215",
+      "aliases": [],
+      "review": {
+        "status": "pending",
+        "reviewer": "agent-03 (Claude); pending maintainer sign-off",
+        "date": "2026-10-30",
+        "notes": "Single GET of the web root. Needs an index title plus a listing link to avoid matching pages that only mention 'Index of'."
+      }
+    },
+    {
+      "id": "exposed-env-file",
+      "version": "1.0.0",
+      "path": "http/exposed-env-file.json",
+      "sha256": "2468381954c929010ff5407fe29fb91ae84a4e994e859bfe5e45ae896b262855",
+      "aliases": [],
+      "review": {
+        "status": "pending",
+        "reviewer": "agent-03 (Claude); pending maintainer sign-off",
+        "date": "2026-10-30",
+        "notes": "Single GET, no redirects. Evidence uses the env profile so every value is redacted and only key names remain."
+      }
+    },
+    {
+      "id": "exposed-git-config",
+      "version": "1.0.0",
+      "path": "http/exposed-git-config.json",
+      "sha256": "f70c3dc4bfdb3d59e5bd8247ef514f6c21f6f4b6b3b0a52b0027290d4472d423",
+      "aliases": [],
+      "review": {
+        "status": "pending",
+        "reviewer": "agent-03 (Claude); pending maintainer sign-off",
+        "date": "2026-10-30",
+        "notes": "Single GET, no redirects. Requires both [core] and repositoryformatversion so HTML error pages cannot match."
+      }
+    },
+    {
+      "id": "server-version-disclosure",
+      "version": "1.0.0",
+      "path": "http/server-version-disclosure.json",
+      "sha256": "261903c48a3cae95d1ccc8fe9686399797afa25407e47d11908a49b6cae02d25",
+      "aliases": [],
+      "review": {
+        "status": "pending",
+        "reviewer": "agent-03 (Claude); pending maintainer sign-off",
+        "date": "2026-10-30",
+        "notes": "Single HEAD of the web root. Only extracts the Server header for component matching."
+      }
+    }
+  ]
+}

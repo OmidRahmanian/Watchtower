@@ -1,0 +1,69 @@
+# WatchTower demonstration lab. Run it with lab/lab.sh (see lab/README.md).
+#
+# Everything here runs on the `lab` network, which Docker creates with
+# `internal: true`: containers on it have no route to the internet, and the
+# only names that resolve are these containers. The scanner (`watchtower`)
+# is attached to that network alone, so it cannot reach anything the lab did
+# not create. The dashboard is reachable from your machine through `gateway`,
+# a reverse proxy bound to 127.0.0.1 only.
+name: watchtower-lab
+
+networks:
+  lab:
+    internal: true
+  edge: {}
+
+volumes:
+  postgres: {}
+  state: {}
+
+services:
+  postgres:
+    build:
+      context: ..
+      dockerfile: lab/postgres.Dockerfile
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LAB_POSTGRES_PASSWORD:?run lab/lab.sh up}
+      WATCHTOWER_DB_PASSWORD: ${LAB_DB_PASSWORD:?run lab/lab.sh up}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    networks: [lab]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d watchtower"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # The targets (built from lab/targets): one nginx answering as www, api and shop under acme-lab.test,
+  # a reserved test domain that cannot exist on the internet.
+  web:
+    build: ./targets
+    networks:
+      lab:
+        aliases: [www.acme-lab.test, api.acme-lab.test, shop.acme-lab.test]
+
+  watchtower:
+    build:
+      context: ..
+      dockerfile: lab/Dockerfile
+    environment:
+      WATCHTOWER_PROFILE: lab
+      WATCHTOWER__DATABASE__URL: postgresql+psycopg://watchtower:${LAB_DB_PASSWORD}@postgres:5432/watchtower
+      WATCHTOWER_PROJECT: acme-lab
+    volumes:
+      - state:/var/lib/watchtower
+    command: ["/bin/sh", "-c", "watchtower-db upgrade && exec watchtower serve --host 0.0.0.0 --port 8080 --allow-remote"]
+    networks: [lab]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway.Dockerfile
+    ports:
+      - "127.0.0.1:${LAB_DASHBOARD_PORT:-8080}:8080"
+    networks: [lab, edge]
+    depends_on: [watchtower]

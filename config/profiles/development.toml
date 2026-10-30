@@ -1,0 +1,16 @@
+# Local development. Set the database URL in the environment, for example:
+#   WATCHTOWER__DATABASE__URL=postgresql+psycopg://watchtower:watchtower@127.0.0.1:5432/watchtower
+log_level = "DEBUG"
+
+[database]
+pool_size = 5
+
+[scope]
+default_permitted_ports = "80,443"
+max_redirects = 5
+allow_private_networks = false
+
+[runtime]
+# WATCHTOWER__RUNTIME__BROKER_URL comes from the environment.
+concurrency = 2
+lease_seconds = 300

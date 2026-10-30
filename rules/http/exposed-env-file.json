@@ -1,0 +1,18 @@
+{
+  "id": "exposed-env-file",
+  "version": "1.0.0",
+  "kind": "http",
+  "title": "Environment file is publicly readable",
+  "description": "A readable /.env file commonly contains database passwords, API keys, and application secrets.",
+  "severity": "critical",
+  "confidence": "firm",
+  "request": {"method": "GET", "path": "/.env"},
+  "match": {
+    "status": [200],
+    "body_all": ["(?m)^\\s*(?:export\\s+)?[A-Z][A-Z0-9_]{2,}\\s*=\\s*\\S"],
+    "body_any": ["(?m)^\\s*(?:APP_|DB_|DATABASE_|REDIS_|MAIL_|AWS_|SECRET|API_)[A-Z0-9_]*\\s*="],
+    "body_none": ["(?i)<html", "(?i)<!doctype"]
+  },
+  "negative_status": [200, 301, 302, 303, 307, 308, 401, 403, 404, 410],
+  "evidence": {"profile": "env"}
+}

@@ -1,0 +1,29 @@
+# The isolated demonstration lab (lab/README.md). The targets are containers
+# on an internal Docker network, so private addresses are allowed here and
+# nowhere else. Loopback, link-local and metadata addresses stay prohibited.
+# WATCHTOWER__DATABASE__URL comes from lab/compose.yaml.
+log_level = "INFO"
+
+[database]
+pool_size = 5
+
+[scope]
+default_permitted_ports = "80"
+allow_private_networks = true
+policy_cache_seconds = 0
+
+[pipeline]
+# Discovery reads a seed file; nothing is asked of third-party sources.
+discovery_sources = ["manual"]
+seed_file = "/var/lib/watchtower/seeds.txt"
+# Empty: the container's resolver, which is Docker's DNS for the lab network.
+dns_nameservers = []
+http_schemes = ["http"]
+evidence_root = "/var/lib/watchtower/evidence"
+# Alert on the first run that sees a change, so each demo step shows its effect.
+confirm_changes = { dns = 1, http = 1 }
+
+[runtime]
+concurrency = 1
+lease_seconds = 120
+heartbeat_seconds = 10

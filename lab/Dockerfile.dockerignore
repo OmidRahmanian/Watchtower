@@ -1,0 +1,11 @@
+# Build context is the repository root; send only what the image needs.
+*
+!pyproject.toml
+!README.md
+!src/
+!migrations/
+!rules/
+!frontend/
+!config/
+!lab/targets/seeds.txt
+**/__pycache__

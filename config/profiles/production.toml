@@ -1,0 +1,30 @@
+# Production. WATCHTOWER__DATABASE__URL must be provided by the environment
+# or a secret manager; never commit credentials to this file.
+log_level = "INFO"
+
+[database]
+pool_size = 10
+max_overflow = 10
+statement_timeout_ms = 30000
+
+[scope]
+default_permitted_ports = "80,443"
+max_redirects = 5
+allow_https_downgrade = false
+# Only enable for internal assessments where private ranges are authorized.
+allow_private_networks = false
+policy_cache_seconds = 5
+
+[auth]
+token_ttl_days = 90
+
+[runtime]
+# WATCHTOWER__RUNTIME__BROKER_URL and notification destinations
+# (WATCHTOWER__NOTIFICATIONS__DESTINATIONS, a JSON array) come from the environment.
+concurrency = 4
+lease_seconds = 300
+heartbeat_seconds = 60
+
+[runtime.limits]
+# Maximum running jobs per concurrency_key across all workers, e.g.
+# "dns" = 4
