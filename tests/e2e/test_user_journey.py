@@ -91,8 +91,7 @@ class Journey:
 
     def member(self, role: str) -> str:
         token_file = self.tmp_path / f"{role}-token"
-        code, out = self.cli("member", "add", f"{role.title()} User", "--role", role, "--save-token", str(token_file),
-                             project="example-co")
+        code, out = self.cli("member", "add", f"{role.title()} User", "--role", role, "--save-token", str(token_file))
         assert code == 0, out
         return token_file.read_text().strip()
 
