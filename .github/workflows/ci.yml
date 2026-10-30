@@ -4,6 +4,7 @@ on:
   push:
     branches: [firstversion, "integration/**", "agent/**", "coord/**"]
   pull_request:
+    branches: [integration/exposure-platform, firstversion]
 
 permissions:
   contents: read
