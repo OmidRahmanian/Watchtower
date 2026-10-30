@@ -1,0 +1,30 @@
+# PostgreSQL for the WatchTower platform.
+#
+#   cp deploy/.env.example deploy/.env    # then set real passwords
+#   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d postgres
+#   WATCHTOWER__DATABASE__URL=postgresql+psycopg://watchtower:<password>@127.0.0.1:5432/watchtower \
+#     watchtower-db upgrade
+#
+# The init script creates the `watchtower` role as a non-superuser that owns
+# the `watchtower` database. The application and migrations both use that
+# role, so row-level security applies to them. The `postgres` superuser is
+# for administration only.
+name: watchtower-platform
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in deploy/.env}
+      WATCHTOWER_DB_PASSWORD: ${WATCHTOWER_DB_PASSWORD:?set WATCHTOWER_DB_PASSWORD in deploy/.env}
+    ports:
+      - 127.0.0.1:${POSTGRES_PORT:-5432}:5432
+    volumes:
+      - ../data/postgres:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d watchtower"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

@@ -1,0 +1,11 @@
+# Legacy scripts (watch.py, start.py, manager.py, launcher.py); Python 3.9+.
+pymongo
+requests
+discord.py
+schedule
+colorama
+rich
+
+# The WatchTower platform package (Python 3.11+) declares its own
+# dependencies in pyproject.toml. Install it with:
+#   python -m pip install -e '.[dev]'

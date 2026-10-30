@@ -123,6 +123,8 @@ class FindingRepository(Protocol):
 
     def get(self, finding_id: UUID) -> Finding | None: ...
 
+    def get_by_fingerprint(self, fingerprint: str) -> Finding | None: ...
+
     def set_status(self, finding_id: UUID, status: FindingStatus) -> Finding: ...
 
     def list(
@@ -199,6 +201,8 @@ class ProjectUnitOfWork(Protocol):
     evidence: EvidenceRepository
     notifications: NotificationRepository
     scope: ScopeRepository
+
+    def get_project(self) -> Project: ...
 
 
 class SystemUnitOfWork(Protocol):
