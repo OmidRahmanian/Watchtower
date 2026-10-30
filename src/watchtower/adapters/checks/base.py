@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from enum import StrEnum
 import socket
-from typing import Any, Protocol
 
+from watchtower.adapters.probing.guard import explain
 from watchtower.domain.models import Severity
 from watchtower.domain.scope import ScopePolicy
 from watchtower.domain.targets import parse_target, parse_url
@@ -90,43 +90,64 @@ class HttpResponse:
         return self.body.decode("utf-8", errors="replace")
 
 
-Fetcher = Callable[[str, str], HttpResponse]
+# fetch(method, url, ip): send one request for ``url`` over a socket opened to
+# ``ip`` only. The URL's hostname is used for SNI and the Host header and is
+# never resolved again, so DNS cannot change between authorization and use.
+Fetcher = Callable[[str, str, str], HttpResponse]
 
 
-class Decision(Protocol):
-    """Anything truthy when allowed; ``ScopeDecision`` satisfies this."""
+@dataclass(frozen=True, slots=True)
+class Authorization:
+    """A scope decision together with the exact addresses it approved.
 
-    def __bool__(self) -> bool: ...
+    Checks connect only to ``addresses``, which come from the same resolution
+    that ``check_connection`` approved. A decision with no addresses is a denial.
+    """
+
+    allowed: bool
+    addresses: tuple[str, ...] = ()
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.allowed and bool(self.addresses)
 
 
-Authorizer = Callable[[str], Any]
+Authorizer = Callable[[str], Authorization]
 
 
-def deny_all(url: str) -> bool:
-    return False
+def deny_all(url: str) -> Authorization:
+    return Authorization(False, detail="no authorizer configured")
 
 
 def resolve_addresses(host: str, port: int) -> list[str]:
-    return sorted({info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
+    return list(dict.fromkeys(info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)))
 
 
 def scope_authorizer(policy: ScopePolicy,
                      resolve: Callable[[str, int], Iterable[str]] = resolve_addresses) -> Authorizer:
-    """Authorize a URL by scope, then authorize its resolved addresses.
+    """Authorize a URL by scope, resolve its host once, and approve that address set.
 
     Redirects are never followed by checks, so ``check_redirect`` is not needed.
     """
 
-    def authorize(url: str):
+    def authorize(url: str) -> Authorization:
         decision = policy.check_url(url)
         if not decision:
-            return decision
+            return Authorization(False, detail=explain(decision))
         parsed = parse_url(url)
-        try:
-            addresses = [] if parsed.host.is_ip else list(resolve(parsed.host.value, parsed.port))
-        except OSError:
-            addresses = []
-        return policy.check_connection(parsed.host, parsed.port, addresses)
+        if parsed.host.is_ip:
+            addresses: tuple[str, ...] = (parsed.host.value,)
+        else:
+            try:
+                addresses = tuple(dict.fromkeys(resolve(parsed.host.value, parsed.port)))
+            except OSError as error:
+                return Authorization(False, detail=f"{parsed.host.value} could not be resolved: {error}")
+            if not addresses:
+                return Authorization(False, detail=f"{parsed.host.value} resolved to no addresses")
+        decision = policy.check_connection(parsed.host, parsed.port, addresses)
+        if not decision:
+            return Authorization(False, addresses, explain(decision))
+        return Authorization(True, addresses)
 
     return authorize
 

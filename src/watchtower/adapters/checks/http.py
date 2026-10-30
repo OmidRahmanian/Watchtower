@@ -1,20 +1,29 @@
 """Declarative HTTP checks driven by pinned rules.
 
 Each check sends one GET or HEAD request to an authorized URL and never
-follows redirects. A response only counts as a negative when its status is
+follows redirects. The socket is opened only to an address that the
+authorizer approved from its own resolution of the hostname, so a DNS answer
+that changes afterwards cannot redirect the request. Rules still pending
+maintainer approval are refused before anything is authorized or sent. A response only counts as a negative when its status is
 listed in the rule's ``negative_status``; anything else, such as rate
 limiting, server errors, or a truncated body, is inconclusive.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
+import http.client
 import re
+import ssl
+import time
+from urllib.parse import urlsplit
 
 from watchtower.adapters.checks.base import (
-    Authorizer, CheckResult, Endpoint, Fetcher, HttpResponse, Outcome, deny_all, utcnow,
+    DEFAULT_PORTS, Authorizer, CheckResult, Endpoint, Fetcher, HttpResponse, Outcome, deny_all, utcnow,
 )
 from watchtower.adapters.checks.manifest import Rule
+from watchtower.adapters.probing import PinnedHTTPConnection, PinnedHTTPSConnection
 from watchtower.services.evidence import http_evidence
 
 MAX_BODY = 256 * 1024
@@ -22,20 +31,39 @@ TIMEOUT = 10
 USER_AGENT = "WatchTower-checks/1"
 
 
-def requests_fetcher(method: str, url: str) -> HttpResponse:
-    import requests
+def pinned_fetcher(method: str, url: str, ip: str) -> HttpResponse:
+    """Send one request for ``url`` to ``ip`` only, with SNI and Host set to the URL's hostname.
 
-    with requests.request(method, url, allow_redirects=False, stream=True, timeout=TIMEOUT,
-                          headers={"User-Agent": USER_AGENT}) as response:
-        body = b""
-        truncated = False
+    Certificates are verified, proxies are not used, and redirects are returned
+    as responses rather than followed.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in DEFAULT_PORTS or not parts.hostname:
+        raise ValueError(f"unsupported URL: {url}")
+    port = parts.port or DEFAULT_PORTS[parts.scheme]
+    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    if parts.scheme == "https":
+        connection: http.client.HTTPConnection = PinnedHTTPSConnection(
+            parts.hostname, ip, port, TIMEOUT, ssl.create_default_context())
+    else:
+        connection = PinnedHTTPConnection(parts.hostname, ip, port, TIMEOUT)
+    deadline = time.monotonic() + TIMEOUT * 3
+    try:
+        connection.request(method, path, headers={"User-Agent": USER_AGENT, "Accept": "*/*", "Connection": "close"})
+        response = connection.getresponse()
+        body, truncated = bytearray(), False
         if method != "HEAD":
-            for chunk in response.iter_content(16384):
-                body += chunk
-                if len(body) > MAX_BODY:
-                    body, truncated = body[:MAX_BODY], True
+            while len(body) <= MAX_BODY:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"body read exceeded {TIMEOUT * 3}s")
+                chunk = response.read(min(65536, MAX_BODY + 1 - len(body)))
+                if not chunk:
                     break
-        return HttpResponse(response.status_code, tuple(response.headers.items()), body, truncated)
+                body.extend(chunk)
+            truncated = len(body) > MAX_BODY
+        return HttpResponse(response.status, tuple(response.getheaders()), bytes(body[:MAX_BODY]), truncated)
+    finally:
+        connection.close()
 
 
 def evaluate(match: dict, response: HttpResponse) -> tuple[bool, tuple[int, int] | None]:
@@ -73,7 +101,7 @@ def extract(rule: dict, response: HttpResponse) -> dict[str, str]:
 
 
 class HttpRuleCheck:
-    def __init__(self, rule: Rule, fetch: Fetcher = requests_fetcher, authorize: Authorizer = deny_all):
+    def __init__(self, rule: Rule, fetch: Fetcher = pinned_fetcher, authorize: Authorizer = deny_all):
         if rule.kind != "http":
             raise ValueError(f"{rule.id} is not an HTTP rule")
         self.rule = rule
@@ -89,16 +117,20 @@ class HttpRuleCheck:
         )
 
     def run(self, target: Endpoint, now: datetime | None = None) -> CheckResult:
+        """Run the rule once. Raises ``RuleNotApproved`` for a pending rule without sending anything."""
+        self.rule.require_approved()
         now = now or utcnow()
         definition = self.rule.definition
         method = definition["request"]["method"]
         url = target.url(definition["request"]["path"])
         decision = self.authorize(url)
-        if not decision:
-            reason = getattr(decision, "detail", "") or getattr(decision, "reason", "")
-            return self._result(target, Outcome.FAILED, now, detail=f"destination not authorized {reason}".strip())
+        addresses = tuple(getattr(decision, "addresses", ()))
+        if not decision or not addresses:
+            reason = getattr(decision, "detail", "") or "no approved address"
+            return self._result(target, Outcome.FAILED, now, detail=f"destination not authorized: {reason}")
+        target = replace(target, resolved_ip=addresses[0])
         try:
-            response = self.fetch(method, url)
+            response = self.fetch(method, url, addresses[0])
         except Exception as error:
             return self._result(target, Outcome.FAILED, now, detail=f"request failed: {type(error).__name__}")
         matched, span = evaluate(definition["match"], response)

@@ -2,7 +2,8 @@
 
 This check sends no traffic of its own. It reads the observations of its
 pinned source rule (for example the ``Server`` header) and matches them to
-advisories. Each product and CVE pair becomes one finding variant, so the
+advisories. Like HTTP checks, it refuses to evaluate while its rule is
+pending maintainer approval. Each product and CVE pair becomes one finding variant, so the
 fingerprint survives version changes inside the affected range.
 """
 
@@ -82,6 +83,7 @@ class VulnerableComponentCheck:
 
     def evaluate(self, source: CheckResult, advisories: Iterable[dict]) -> list[CheckResult]:
         """Match every disclosed component to every advisory for that product."""
+        self.rule.require_approved()
         if source.check_id != self.rule.definition["source_rule"] or source.outcome != Outcome.DETECTED:
             return []
         components = self.components(source)
@@ -90,6 +92,7 @@ class VulnerableComponentCheck:
 
     def evaluate_variant(self, source: CheckResult, advisory: dict) -> CheckResult:
         """Retest one product and advisory pair. A hidden banner proves nothing about a fix."""
+        self.rule.require_approved()
         product = advisory["product"]
         if source.check_id != self.rule.definition["source_rule"]:
             raise ValueError("source result comes from the wrong rule")

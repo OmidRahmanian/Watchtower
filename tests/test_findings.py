@@ -4,7 +4,8 @@ import json
 import unittest
 from uuid import uuid4
 
-from watchtower.adapters.checks import Endpoint, build_checks, load_manifest
+from checks_support import allow, approved_ruleset
+from watchtower.adapters.checks import Endpoint, build_checks
 from watchtower.adapters.checks.base import HttpResponse
 from watchtower.domain.models import Asset, AssetKind, Finding, FindingStatus, NewFinding, Severity, StoredBlob
 from watchtower.services.evidence import MEDIA_TYPE, to_new_evidence
@@ -18,21 +19,21 @@ URL = "https://shop.example.com/.git/config"
 
 
 class Scanner:
-    """Runs the real pinned git-config rule against canned responses."""
+    """Runs the real pinned git-config rule, approved in a test-only manifest, against canned responses."""
 
     def __init__(self):
-        self.ruleset = load_manifest()
+        self.ruleset = approved_ruleset()
         self.reply = HttpResponse(200, (), GIT_CONFIG)
 
-    def fetch(self, method, url):
+    def fetch(self, method, url, ip):
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
 
     def run(self, reply, at, ip="203.0.113.10", check="exposed-git-config", host="shop.example.com"):
         self.reply = reply
-        http, _ = build_checks(self.ruleset, self.fetch, lambda url: True)
-        return http[check].run(Endpoint(host, resolved_ip=ip), at)
+        http, _ = build_checks(self.ruleset, self.fetch, allow(ip))
+        return http[check].run(Endpoint(host), at)
 
 
 EXPOSED = HttpResponse(200, (), GIT_CONFIG)

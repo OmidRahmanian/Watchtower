@@ -1,10 +1,15 @@
 """Pinned rule manifests.
 
-``rules/manifest.json`` lists every rule that may run, with the SHA-256 of
+``rules/manifest.json`` lists every rule that may load, with the SHA-256 of
 its definition and a review record. A rule file that is missing, unpinned,
 unreviewed, or changed since it was pinned is refused. Rule ids are stable
 finding keys: versions may change freely, and renamed rules list their old
 ids as aliases so existing findings keep their fingerprints.
+
+A pinned rule may be ``pending`` maintainer approval. Pending rules load, so
+they can be listed and reviewed, but every check refuses to run them with
+``RuleNotApproved``. Approval names a human maintainer and the exact hash
+approved, so editing an approved rule returns it to an unrunnable state.
 
 Verify pins:      python -m watchtower.adapters.checks
 Show new hashes:  python -m watchtower.adapters.checks --hashes
@@ -13,6 +18,7 @@ Show new hashes:  python -m watchtower.adapters.checks --hashes
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 import hashlib
 import json
 import os
@@ -39,10 +45,22 @@ SEVERITIES = tuple(severity.value for severity in Severity)
 CONFIDENCES = ("tentative", "firm", "confirmed")
 METHODS = ("GET", "HEAD")
 KINDS = ("http", "component")
+REVIEW_STATUSES = ("pending", "approved")
+APPROVAL_FIELDS = ("approved_by", "approved_at", "approved_sha256")
+# Approval must come from a human maintainer. This refuses obvious automation
+# identities; the real control is that manifest changes go through human review.
+AUTOMATED_APPROVER = re.compile(
+    r"(?i)(?:\bagent\b|agent[-_ ]?\d|claude|anthropic|openai|\bgpt|copilot|gemini|\bllm\b|\bai\b|"
+    r"\bbot\b|\[bot\]|[-_]bot\b|automat|\bci\b)"
+)
 
 
 class RuleIntegrityError(ValueError):
     pass
+
+
+class RuleNotApproved(PermissionError):
+    """A pinned rule is still pending maintainer approval, so it must not run."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +92,16 @@ class Rule:
     def cves(self) -> tuple[str, ...]:
         return tuple(self.definition.get("cves", ()))
 
+    @property
+    def approved(self) -> bool:
+        review = self.review or {}
+        return review.get("status") == "approved" and review.get("approved_sha256") == self.sha256
+
+    def require_approved(self) -> None:
+        """Raise ``RuleNotApproved`` unless a maintainer approved this exact rule content."""
+        if not self.approved:
+            raise RuleNotApproved(f"{self.id} {self.version} is pending maintainer approval and cannot run")
+
 
 @dataclass(frozen=True, slots=True)
 class RuleSet:
@@ -88,6 +116,10 @@ class RuleSet:
 
     def __iter__(self):
         return iter(self.rules.values())
+
+    @property
+    def pending(self) -> list[str]:
+        return sorted(rule.id for rule in self if not rule.approved)
 
 
 def digest(path: Path) -> str:
@@ -129,6 +161,26 @@ def validate_definition(rule: dict) -> None:
         _require(bool(rule.get("product_map")), f"{rule_id}: component rules need product_map")
 
 
+def validate_review(rule_id: str, review: dict, sha256: str) -> None:
+    _require(bool(review.get("reviewer") and review.get("date")), f"{rule_id}: rule has no review record")
+    status = review.get("status")
+    _require(status in REVIEW_STATUSES, f"{rule_id}: review status must be one of {', '.join(REVIEW_STATUSES)}")
+    if status == "pending":
+        _require(not any(review.get(name) for name in APPROVAL_FIELDS),
+                 f"{rule_id}: a pending review must not carry approval fields")
+        return
+    approver = str(review.get("approved_by") or "").strip()
+    _require(bool(approver), f"{rule_id}: an approved review needs approved_by")
+    _require(not AUTOMATED_APPROVER.search(approver),
+             f"{rule_id}: approved_by {approver!r} looks automated; only a human maintainer may approve")
+    try:
+        date.fromisoformat(str(review.get("approved_at") or ""))
+    except ValueError as error:
+        raise RuleIntegrityError(f"{rule_id}: an approved review needs approved_at as YYYY-MM-DD") from error
+    _require(review.get("approved_sha256") == sha256,
+             f"{rule_id}: approved_sha256 does not match the pinned hash; the approval covers other content")
+
+
 def load_manifest(root: Path = RULES_ROOT) -> RuleSet:
     manifest = json.loads((root / "manifest.json").read_text())
     _require(manifest.get("manifest_version") == 1, "unsupported manifest_version")
@@ -144,7 +196,7 @@ def load_manifest(root: Path = RULES_ROOT) -> RuleSet:
         _require(actual == entry.get("sha256"),
                  f"{rule_id}: content hash {actual} does not match pinned {entry.get('sha256')}")
         review = entry.get("review") or {}
-        _require(bool(review.get("reviewer") and review.get("date")), f"{rule_id}: rule has no review record")
+        validate_review(rule_id, review, actual)
         definition = json.loads(path.read_text())
         validate_definition(definition)
         _require(definition["id"] == rule_id and definition["version"] == entry["version"],
@@ -182,5 +234,9 @@ def main(argv: list[str]) -> int:
         return 1
     for path in unpinned_files():
         print(f"Unpinned rule ignored: {path.relative_to(RULES_ROOT)}", file=sys.stderr)
-    print(f"{len(ruleset.rules)} pinned rules verified.")
+    pending = ruleset.pending
+    print(f"{len(ruleset.rules)} pinned rules verified: {len(ruleset.rules) - len(pending)} approved, "
+          f"{len(pending)} pending approval.")
+    for rule_id in pending:
+        print(f"Pending maintainer approval (will not run): {rule_id}")
     return 0

@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from watchtower.adapters.checks import Endpoint, build_checks, load_manifest
+from checks_support import allow, approved_ruleset
+from watchtower.adapters.checks import Endpoint, build_checks
 from watchtower.adapters.checks.base import HttpResponse
 from watchtower.adapters.intelligence import EpssFeed, IntelligenceStore, KevFeed
 from watchtower.domain.models import FindingStatus, Severity
@@ -29,12 +30,12 @@ class PrioritizationTests(unittest.TestCase):
         self.epss = EpssFeed(transport=serve("epss.csv"))
         self.store.refresh(self.kev, NOW)
         self.store.refresh(self.epss, NOW)
-        self.ruleset = load_manifest()
+        self.ruleset = approved_ruleset()
         self.service = FindingService(canonical_id=self.ruleset.canonical_id)
 
     def component_finding(self, banner, variant="CVE-2021-41773"):
-        fetch = lambda method, url: HttpResponse(200, (("Server", banner),))
-        http, component = build_checks(self.ruleset, fetch, lambda url: True)
+        fetch = lambda method, url, ip: HttpResponse(200, (("Server", banner),))
+        http, component = build_checks(self.ruleset, fetch, allow("203.0.113.10"))
         source = http["server-version-disclosure"].run(Endpoint("shop.example.com"), NOW)
         results = component["vulnerable-component"].evaluate(source, ADVISORIES)
         return self.service.ingest(next(r for r in results if r.variant == variant))
@@ -84,8 +85,8 @@ class PrioritizationTests(unittest.TestCase):
         self.assertEqual(priority["level"], "P2")
 
     def test_findings_without_cves_rank_by_severity_and_confidence(self):
-        fetch = lambda method, url: HttpResponse(200, (), b"APP_KEY=x\nDB_PASSWORD=y\n")
-        http, _ = build_checks(self.ruleset, fetch, lambda url: True)
+        fetch = lambda method, url, ip: HttpResponse(200, (), b"APP_KEY=x\nDB_PASSWORD=y\n")
+        http, _ = build_checks(self.ruleset, fetch, allow("203.0.113.10"))
         finding = self.service.ingest(http["exposed-env-file"].run(Endpoint("shop.example.com"), NOW))
         priority = prioritize(finding, self.store, self.kev, self.epss, NOW)
         self.assertEqual((priority["level"], priority["score"], priority["applicability"]), ("P1", 90, None))
