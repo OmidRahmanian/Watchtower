@@ -25,6 +25,7 @@ from watchtower.persistence.repositories.records import (
     PgObservationRepository,
 )
 from watchtower.persistence.repositories.scope import PgProjectRepository, PgScopeRepository
+from watchtower.persistence.repositories.snapshots import PgPhaseSnapshotRepository
 from watchtower.persistence.tables import projects
 
 
@@ -40,6 +41,7 @@ class PgProjectUnitOfWork:
         self.findings = PgFindingRepository(connection, project_id)
         self.evidence = PgEvidenceRepository(connection, project_id)
         self.notifications = PgNotificationRepository(connection, project_id)
+        self.phase_snapshots = PgPhaseSnapshotRepository(connection, project_id)
         self.scope = PgScopeRepository(connection, project_id)
 
     def get_project(self) -> Project:

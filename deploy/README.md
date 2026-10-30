@@ -37,6 +37,23 @@ Scope enforcement settings (`[scope]`):
 | `extra_prohibited_networks` / `extra_prohibited_hostnames` | `[]` | Deployment-specific never-contact lists (JSON arrays in the environment) |
 | `policy_cache_seconds` | `5` | Upper bound on how long a revocation takes to reach other processes |
 
+Worker settings (`[runtime]`):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `broker_url` | unset | Job broker URL; a secret, so set `WATCHTOWER__RUNTIME__BROKER_URL` |
+| `concurrency` | `4` | Jobs one worker process runs at once |
+| `lease_seconds` / `heartbeat_seconds` | `300` / `60` | Job lease length and renewal interval; the heartbeat must be at most half the lease |
+| `limits` | `{}` | Maximum running jobs per `concurrency_key` across all workers, for example `WATCHTOWER__RUNTIME__LIMITS='{"dns": 4}'` |
+
+Notification destinations (`[notifications]`) embed credentials in their URLs, so set them in the environment:
+
+```bash
+export WATCHTOWER__NOTIFICATIONS__DESTINATIONS='[{"name": "discord", "kind": "discord", "url": "https://discord.com/api/webhooks/..."}]'
+```
+
+Each destination has a `name` (matched against a notification's `channel`), a `kind` (`discord`, `slack`, `telegram` or `webhook`), an `https://` `url`, optional `events` (event types to deliver; empty delivers all) and `enabled`.
+
 ## MongoDB (legacy)
 
 The root `docker-compose.yml` still runs the legacy MongoDB for the existing scripts and for the one-time import (see `migrations/README.md`). It is published on `127.0.0.1` only because it has no authentication.

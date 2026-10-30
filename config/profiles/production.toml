@@ -17,3 +17,14 @@ policy_cache_seconds = 5
 
 [auth]
 token_ttl_days = 90
+
+[runtime]
+# WATCHTOWER__RUNTIME__BROKER_URL and notification destinations
+# (WATCHTOWER__NOTIFICATIONS__DESTINATIONS, a JSON array) come from the environment.
+concurrency = 4
+lease_seconds = 300
+heartbeat_seconds = 60
+
+[runtime.limits]
+# Maximum running jobs per concurrency_key across all workers, e.g.
+# "dns" = 4

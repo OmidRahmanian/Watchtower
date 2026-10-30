@@ -6,6 +6,7 @@ from watchtower.domain.errors import (
     InvalidTarget,
     NotFound,
     PermissionDenied,
+    RunCancelled,
     ScopeViolation,
     WatchtowerError,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "RedirectDecision",
     "RuleEffect",
     "RuleKind",
+    "RunCancelled",
     "ScopeDecision",
     "ScopePolicy",
     "ScopeRevision",

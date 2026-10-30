@@ -38,3 +38,7 @@ class AuthenticationFailed(WatchtowerError):
 
 class PermissionDenied(WatchtowerError):
     """An authenticated principal lacks the permission for an action."""
+
+
+class RunCancelled(WatchtowerError):
+    """A job was enqueued for a run whose cancellation was already requested."""

@@ -8,3 +8,8 @@ statement_timeout_ms = 10000
 [scope]
 default_permitted_ports = "80,443"
 policy_cache_seconds = 0
+
+[runtime]
+concurrency = 1
+lease_seconds = 60
+heartbeat_seconds = 10
