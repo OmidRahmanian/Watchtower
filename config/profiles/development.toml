@@ -9,3 +9,8 @@ pool_size = 5
 default_permitted_ports = "80,443"
 max_redirects = 5
 allow_private_networks = false
+
+[runtime]
+# WATCHTOWER__RUNTIME__BROKER_URL comes from the environment.
+concurrency = 2
+lease_seconds = 300

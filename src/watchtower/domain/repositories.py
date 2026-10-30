@@ -31,15 +31,19 @@ from watchtower.domain.models import (
     Finding,
     FindingStatus,
     Job,
+    LeaseStatus,
     NewEvidence,
     NewFinding,
     NewJob,
     NewNotification,
     NewObservation,
+    NewPhaseSnapshot,
     Notification,
     Observation,
     ObservationKind,
+    PhaseSnapshot,
     Project,
+    RunPhase,
     StoredBlob,
 )
 from watchtower.domain.scope import NewScopeRevision, ScopeRevision
@@ -88,13 +92,33 @@ class ObservationRepository(Protocol):
 
 class JobRepository(Protocol):
     def enqueue(self, new: NewJob) -> tuple[Job, bool]:
-        """Queue a job; a repeated ``idempotency_key`` returns the existing job."""
+        """Queue a job; a repeated ``idempotency_key`` returns the existing job.
+
+        Raises ``RunCancelled`` if ``new.run_id`` names a run whose cancellation
+        was requested, even when the key matches an existing job.
+        """
         ...
 
     def get(self, job_id: UUID) -> Job | None: ...
 
+    def list_for_run(self, run_id: UUID) -> Sequence[Job]:
+        """The run's jobs, oldest first."""
+        ...
+
     def cancel(self, job_id: UUID) -> bool:
-        """Cancel a queued job; running and finished jobs are left alone."""
+        """Cancel a queued job; running and finished jobs are left alone. Prefer ``request_cancel``."""
+        ...
+
+    def request_cancel(self, *, job_id: UUID | None = None, run_id: UUID | None = None, reason: str) -> int:
+        """Ask a job, or every job of a run, to stop; pass exactly one of ``job_id`` and ``run_id``.
+
+        Queued jobs become cancelled at once. Running jobs only get
+        ``cancel_requested_at``: their worker sees it on its next heartbeat and
+        calls ``JobLeaseRepository.mark_cancelled``. Finished jobs are left
+        alone. Cancelling a run also refuses later ``enqueue`` calls for it,
+        including when the run has no jobs yet. Returns how many jobs were
+        newly cancelled or flagged; repeating a request returns 0.
+        """
         ...
 
 
@@ -102,17 +126,45 @@ class JobLeaseRepository(Protocol):
     """Cross-project job leasing for workers (``SystemUnitOfWork`` only)."""
 
     def claim(
-        self, worker_id: str, *, kinds: Sequence[str] | None = None, lease_seconds: int = 300, limit: int = 1
+        self,
+        worker_id: str,
+        *,
+        kinds: Sequence[str] | None = None,
+        lease_seconds: int = 300,
+        limit: int = 1,
+        limits: Mapping[str, int] | None = None,
     ) -> Sequence[Job]:
-        """Lease due jobs (queued, or running with an expired lease), highest priority first."""
+        """Lease due jobs (queued, or running with an expired lease), highest priority first.
+
+        Jobs with a cancel request are never leased; an expired lease on such a
+        job turns it cancelled. ``limits`` caps how many jobs with each
+        ``concurrency_key`` may run at once, counting unexpired leases in every
+        project; keys not listed, and jobs without a key, are unlimited. Limits
+        are enforced only among claims that pass them. A claim with
+        ``limits`` serializes with other such claims on the same keys until its
+        transaction commits, so claim in a short transaction of its own.
+        """
         ...
 
-    def heartbeat(self, job_id: UUID, worker_id: str, *, lease_seconds: int = 300) -> bool: ...
+    def heartbeat(self, job_id: UUID, worker_id: str, *, lease_seconds: int = 300) -> LeaseStatus:
+        """Extend the lease. Falsy when the worker no longer holds it."""
+        ...
 
     def complete(self, job_id: UUID, worker_id: str, result: Mapping[str, Any] | None = None) -> bool: ...
 
     def fail(self, job_id: UUID, worker_id: str, error: str, *, retry_in_seconds: int | None = None) -> bool:
-        """Record a failure; requeue after ``retry_in_seconds`` while attempts remain."""
+        """Record a failure; requeue after ``retry_in_seconds`` while attempts remain.
+
+        A job with a cancel request is cancelled instead of requeued.
+        """
+        ...
+
+    def mark_cancelled(self, job_id: UUID, worker_id: str, detail: str) -> bool:
+        """Finish a held job as cancelled; ``detail`` is stored as ``result["cancel_detail"]``.
+
+        A worker may also cancel without a request; ``detail`` then becomes the
+        cancel reason.
+        """
         ...
 
 
@@ -164,6 +216,22 @@ class NotificationLeaseRepository(Protocol):
     def mark_failed(self, notification_id: UUID, worker_id: str, error: str, *, retry_in_seconds: int | None = None) -> bool: ...
 
 
+class PhaseSnapshotRepository(Protocol):
+    """Append-only per-phase results of pipeline runs, used to compare runs."""
+
+    def record(self, new: NewPhaseSnapshot) -> tuple[PhaseSnapshot, bool]:
+        """Append a snapshot; a repeated ``(run_id, phase, target)`` returns the existing one."""
+        ...
+
+    def latest_comparable(self, target: str, phase: RunPhase) -> PhaseSnapshot | None:
+        """The newest completed or partial snapshot for ``target`` and ``phase``."""
+        ...
+
+    def list_for_run(self, run_id: UUID) -> Sequence[PhaseSnapshot]:
+        """Oldest first."""
+        ...
+
+
 class ScopeRepository(Protocol):
     """Immutable scope revisions. Use ``watchtower.services.scope`` rather than this directly."""
 
@@ -200,6 +268,7 @@ class ProjectUnitOfWork(Protocol):
     findings: FindingRepository
     evidence: EvidenceRepository
     notifications: NotificationRepository
+    phase_snapshots: PhaseSnapshotRepository
     scope: ScopeRepository
 
     def get_project(self) -> Project: ...

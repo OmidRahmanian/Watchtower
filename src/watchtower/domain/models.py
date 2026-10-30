@@ -7,7 +7,7 @@ timezone-aware UTC. ``Mapping`` fields hold JSON-compatible data only.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -136,6 +136,8 @@ class NewJob:
     run_after: datetime | None = None
     max_attempts: int = 3
     idempotency_key: str | None = None  # unique per project while the job exists
+    run_id: UUID | None = None  # groups the jobs of one pipeline run; see JobRepository.request_cancel
+    concurrency_key: str | None = None  # limited per key by JobLeaseRepository.claim(limits=...)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +160,28 @@ class Job:
     finished_at: datetime | None = None
     result: JSON | None = None
     last_error: str | None = None
+    run_id: UUID | None = None
+    concurrency_key: str | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_reason: str | None = None
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self.cancel_requested_at is not None
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseStatus:
+    """Result of ``JobLeaseRepository.heartbeat``; truthy while the lease is held.
+
+    ``cancel_requested`` tells the worker to stop and call ``mark_cancelled``.
+    """
+
+    held: bool
+    cancel_requested: bool = False
+
+    def __bool__(self) -> bool:
+        return self.held
 
 
 class Severity(StrEnum):
@@ -268,3 +292,70 @@ class Notification:
     lease_expires_at: datetime | None = None
     sent_at: datetime | None = None
     last_error: str | None = None
+
+
+class RunPhase(StrEnum):
+    DISCOVERY = "discovery"
+    DNS = "dns"
+    HTTP = "http"
+    CHECKS = "checks"
+
+
+class PhaseStatus(StrEnum):
+    COMPLETED = "completed"
+    PARTIAL = "partial"  # finished with some items pending or failed
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+# Snapshots with these statuses can serve as the baseline for a later run.
+COMPARABLE_PHASE_STATUSES = frozenset({PhaseStatus.COMPLETED, PhaseStatus.PARTIAL})
+
+
+class PhaseComparison(StrEnum):
+    BASELINE = "baseline"  # no earlier comparable snapshot
+    UNCHANGED = "unchanged"
+    CHANGED = "changed"
+    PARTIAL = "partial"  # compared, but this or the earlier snapshot was partial
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True, slots=True)
+class NewPhaseSnapshot:
+    """What one phase of a run produced for one target.
+
+    ``target`` should be canonical (``canonical_hostname``/``canonical_ip``) so
+    later runs find it. ``items`` and ``pending`` are JSON arrays; ``changes``
+    and ``stats`` are JSON objects.
+    """
+
+    run_id: UUID
+    target: str
+    phase: RunPhase
+    status: PhaseStatus
+    comparison: PhaseComparison
+    items: Sequence[Any] = ()
+    pending: Sequence[Any] = ()
+    changes: JSON = field(default_factory=dict)
+    stats: JSON = field(default_factory=dict)
+    job_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseSnapshot:
+    """Append-only: a snapshot is never updated after it is recorded."""
+
+    id: UUID
+    project_id: UUID
+    run_id: UUID
+    target: str
+    phase: RunPhase
+    status: PhaseStatus
+    comparison: PhaseComparison
+    items: Sequence[Any]
+    pending: Sequence[Any]
+    changes: JSON
+    stats: JSON
+    created_at: datetime
+    job_id: UUID | None = None

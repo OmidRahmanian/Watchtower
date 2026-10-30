@@ -11,7 +11,7 @@ watchtower-db downgrade base   # remove the schema (development only)
 
 ## Rules for new revisions
 
-- Number revisions sequentially (`0002_<topic>.py`, `down_revision = "0001"`), and tell the other workstreams before taking a number.
+- Number revisions sequentially (`0003_<topic>.py`, `down_revision = "0002"`), and tell the other workstreams before taking a number. Taken: `0001` foundation, `0002` runtime (run cancellation, concurrency keys, phase snapshots).
 - Mirror every change in `src/watchtower/persistence/tables.py`. `test_fresh_database_migrates_to_head_and_matches_metadata` fails if the ORM metadata and the migrated schema differ.
 - Every project-owned table needs a `project_id` column, composite `(project_id, id)` foreign keys to other project-owned tables, and the `project_isolation` policy:
 

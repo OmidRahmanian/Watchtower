@@ -24,7 +24,7 @@ def test_fresh_database_migrates_to_head_and_matches_metadata(migrated_url: URL)
     try:
         with engine.connect() as connection:
             context = MigrationContext.configure(connection, opts={"compare_type": True})
-            assert context.get_current_revision() == "0001"
+            assert context.get_current_revision() == "0002"
             assert compare_metadata(context, metadata) == []
             rls = connection.execute(
                 text("SELECT relname FROM pg_class WHERE relrowsecurity AND relforcerowsecurity")
