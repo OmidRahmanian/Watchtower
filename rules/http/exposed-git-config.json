@@ -1,0 +1,17 @@
+{
+  "id": "exposed-git-config",
+  "version": "1.0.0",
+  "kind": "http",
+  "title": "Git repository configuration is publicly readable",
+  "description": "A readable /.git/config usually means the whole repository, including history and secrets, can be downloaded.",
+  "severity": "high",
+  "confidence": "firm",
+  "request": {"method": "GET", "path": "/.git/config"},
+  "match": {
+    "status": [200],
+    "body_all": ["(?m)^\\s*\\[core\\]\\s*$", "(?m)^\\s*repositoryformatversion\\s*="],
+    "body_none": ["(?i)<html"]
+  },
+  "negative_status": [200, 301, 302, 303, 307, 308, 401, 403, 404, 410],
+  "evidence": {"profile": "default"}
+}
