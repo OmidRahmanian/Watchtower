@@ -1,0 +1,6 @@
+# A fake configuration file that the "change" step leaves in the web root.
+# None of these values are real; WatchTower redacts them in evidence anyway.
+APP_ENV=production
+APP_KEY=base64:bGFiLW9ubHktbm90LWEtcmVhbC1rZXk=
+DB_HOST=postgres.acme-lab.test
+DB_PASSWORD=lab-only-not-a-real-password

@@ -1,0 +1,4 @@
+# Hostnames the lab's manual discovery source reports (pipeline.seed_file).
+# lab.sh "change" appends shop.acme-lab.test to the copy in the state volume.
+www.acme-lab.test
+api.acme-lab.test
