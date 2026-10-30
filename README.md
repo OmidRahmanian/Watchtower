@@ -6,6 +6,39 @@ WatchTower is a Python reconnaissance and attack surface monitoring toolkit for 
 
 Use it to build an inventory of your targets, discover newly exposed services, and follow changes over time.
 
+## WatchTower platform
+
+The platform is the new core of WatchTower. It keeps projects, authorized scope, inventory, findings and runs in PostgreSQL. Nothing is scanned until an owner publishes the scope they are authorized to test, together with the authorization behind it. It is operated from the `watchtower` CLI, the guided launcher, an HTTP API, or the dashboard.
+
+```mermaid
+flowchart LR
+    A[Owner publishes authorized scope] --> B[Run: discovery, DNS, HTTP, checks]
+    B --> C[(PostgreSQL: inventory, findings, evidence)]
+    B --> D[Grouped alerts]
+    C --> E[CLI / dashboard / API]
+    E -->|retest| B
+```
+
+- **Try it with Docker only:** `lab/lab.sh demo` runs the whole journey against targets on an isolated network. See [lab/README.md](lab/README.md).
+- **Install it:** see [docs/installation.md](docs/installation.md).
+- **API:** see [docs/api.md](docs/api.md).
+- **What it covers, what it does not, and how each step is tested:** see [docs/coverage.md](docs/coverage.md).
+
+```bash
+watchtower scope publish --include example.com --include '*.example.com' \
+  --authorization-kind contract --reference SOW-14 --granted-by "Example CISO" --i-am-authorized
+watchtower run start --watch --work
+watchtower findings
+watchtower finding retest <id> --watch --work
+watchtower serve                     # dashboard at http://127.0.0.1:8080
+```
+
+A finding is resolved only by a conclusive negative retest of its own check against its own endpoint. Failed and inconclusive retests, and failed or partial scans, are shown as such and never count as a fix. The shipped detection rules run only after a maintainer approves them ([rules/README.md](rules/README.md)).
+
+## Legacy discovery
+
+The rest of this README describes the original MongoDB toolkit. It still works on its own, alongside the platform.
+
 ## What it does
 
 - **Discover subdomains** with Subfinder, certificate transparency data from crt.sh, and SecurityTrails.
@@ -39,6 +72,8 @@ python3 launcher.py
 ```
 
 The launcher opens with a WatchTower ASCII eye banner, with a red pupil in colour terminals and a compact version for narrow windows. Preview it with `python3 launcher.py --banner`. Set `NO_COLOR=1` for plain text.
+
+The launcher first asks which mode to use. **Platform** (`python3 launcher.py --platform`) picks a settings profile and project and records the authorization for your domain before publishing scope. It then starts a run and follows it, watches for alerts, or opens the dashboard; see [docs/installation.md](docs/installation.md#the-guided-launcher). **Legacy discovery** (`python3 launcher.py --legacy`) is the setup described below.
 
 The launcher uses the project's virtual environment when one is available. Choose a saved target or enter a domain, add an optional report URL and exact subdomain exclusions, and select a discovery schedule:
 
@@ -202,7 +237,12 @@ The menu supports exporting discovered, resolved, and HTTP assets; searching by 
 
 | File or directory | Role |
 | --- | --- |
-| `launcher.py` | Interactive target selection, discovery setup, MongoDB startup, and live logs |
+| `src/watchtower/` | The platform package: domain, persistence, services, workers, API (`api/`) and CLI (`cli.py`) |
+| `frontend/` | The dashboard served by `watchtower serve` |
+| `lab/` | The isolated demonstration lab |
+| `docs/` | Installation, API and coverage documentation |
+| `rules/` | Detection rules and their pinned, maintainer-approved manifest |
+| `launcher.py` | Interactive setup for the platform or legacy discovery, with the banner |
 | `session.py` | Prevents overlapping monitoring and setup sessions |
 | `run.sh` | Starts the backend with local environment credentials |
 | `requirements.txt` | Python dependencies |
