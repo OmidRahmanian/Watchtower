@@ -21,3 +21,21 @@ project_id = _foundation.project_id
 authorization = _foundation.authorization
 
 from runtime_support import lab, operator, runs, scope_service, viewer  # noqa: E402,F401
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def retire_leftover_work(request):
+    """Workers lease across projects, so a test's unfinished jobs must not leak into the next test."""
+    yield
+    if "database" not in request.fixturenames:
+        return
+    db = request.getfixturevalue("database")
+    with db.system() as system:
+        system.connection.exec_driver_sql(
+            "UPDATE jobs SET status = 'cancelled', finished_at = now(), lease_owner = NULL, lease_expires_at = NULL "
+            "WHERE status IN ('queued', 'running')")
+        system.connection.exec_driver_sql(
+            "UPDATE notifications SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL "
+            "WHERE status IN ('pending', 'sending')")

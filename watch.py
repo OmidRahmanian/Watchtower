@@ -1,3 +1,16 @@
+import os
+import sys
+
+if __name__ == "__main__":
+    # The platform runtime replaces the legacy scheduler below. Hand off before the
+    # legacy imports and webhook setup, which need MongoDB and notification secrets.
+    from session import platform_requested
+    if platform_requested(sys.argv[1:], os.environ):
+        from pathlib import Path
+        from session import run_platform
+        sys.exit(run_platform(Path(__file__).resolve().parent, os.environ.pop("WATCHTOWER_LOCK_FD", None),
+                              schedule_every=os.environ.get("WATCHTOWER_SCHEDULE_EVERY", "6h")))
+
 import pymongo
 import os
 import subprocess

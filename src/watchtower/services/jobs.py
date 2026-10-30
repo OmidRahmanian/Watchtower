@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import and_, func, select, tuple_
+from sqlalchemy import and_, func, or_, select, tuple_
 
 from watchtower.adapters.checks import (
     CheckResult, Endpoint, Outcome as CheckOutcome, RuleNotApproved, RuleSet, build_checks, load_manifest,
@@ -53,7 +53,7 @@ from watchtower.domain.models import (
     PhaseStatus, RunPhase,
 )
 from watchtower.domain.repositories import BlobStore, ProjectUnitOfWork
-from watchtower.domain.scope import RuleKind, ScopePolicy
+from watchtower.domain.scope import DecisionReason, RuleKind, ScopePolicy
 from watchtower.persistence.database import Database
 from watchtower.persistence.repositories.queue import _notification
 from watchtower.persistence.tables import jobs as jobs_table, notifications as notifications_table
@@ -172,6 +172,18 @@ def scope_roots(policy: ScopePolicy) -> list[str]:
     return sorted(roots)
 
 
+def root_allowed(policy: ScopePolicy, target: str, decision: Any) -> bool:
+    """Whether ``target`` may be a run's root domain.
+
+    It must be in scope, except that the apex named by a ``*.example.com``
+    rule is a root even though the apex itself is not in scope. Only that one
+    denial is waived: a revoked, expired or superseded scope still refuses.
+    """
+    if decision:
+        return True
+    return decision.reason is DecisionReason.NOT_IN_SCOPE and target in scope_roots(policy)
+
+
 def _hosts_under(inventory: InventoryService, target: str) -> list[Any]:
     return [asset for asset in inventory.assets() if in_domain(asset.value, target)]
 
@@ -222,6 +234,13 @@ class Pipeline:
         token.check()
         meta = job.payload["run"]
         if job.kind == FINALIZE:
+            with self.db.project(job.project_id) as uow:
+                pending = any(j.status in ACTIVE and j.kind != FINALIZE
+                              for j in uow.jobs.list_for_run(job.run_id))
+            if pending:
+                # Keep a durable reconciliation marker if this worker wins
+                # the race with its predecessor's completion commit.
+                return {"notifications": 0, "pending_predecessors": True}
             return {"notifications": self.finalize(job.project_id, job.run_id)}
         policy = self.scope.policy_for_revision(job.project_id, job.scope_revision_id)
         if job.kind == RETEST:
@@ -252,8 +271,7 @@ class Pipeline:
         if (phase, target) in done:
             return done[(phase, target)].comparison.value  # recorded before a crash or retry
         gate = policy.check_target(target, port=None)
-        denied = not gate and not (policy.revision and target in scope_roots(policy))
-        if denied or policy.revision is None:
+        if not root_allowed(policy, target, gate):
             observed = changes.Observed(failed=True, stats={"skipped": explain(gate)})
             return self._record(job, phase, target, observed, lambda uow: None)
         handler = {
@@ -441,8 +459,11 @@ class Pipeline:
                  "inconclusive": len(inconclusive),
                  "detected": sum(r.outcome is CheckOutcome.DETECTED for r in results)}
 
+        # Checks ran and none produced a conclusive answer: the scan failed, it did not merely skip work.
+        failed = bool(results) and len(inconclusive) == len(results)
+
         def observe(uow: ProjectUnitOfWork, _: Any) -> changes.Observed:
-            return changes.Observed(items=self._finding_items(uow, target),
+            return changes.Observed(items=self._finding_items(uow, target), failed=failed,
                                     complete=not not_run and not inconclusive, stats=stats)
 
         return self._record(job, RunPhase.CHECKS, target, observe,
@@ -472,8 +493,11 @@ class Pipeline:
                 return None
 
         def observe(uow: ProjectUnitOfWork, _: Any) -> changes.Observed:
-            return changes.Observed(items=self._finding_items(uow, target),
-                                    complete=bool(results) and results[0].outcome.conclusive, stats=stats)
+            # Not run (pending rule) is partial; a failed or inconclusive retest is a failed retest.
+            ran = bool(results)
+            return changes.Observed(items=self._finding_items(uow, target), stats=stats,
+                                    failed=ran and not results[0].outcome.conclusive,
+                                    complete=ran and results[0].outcome.conclusive)
 
         self._record(job, RunPhase.CHECKS, target, observe, lambda uow: self._ingest(uow, policy, results, apply))
         return {"outcome": outcome, "not_run": not_run}
@@ -489,11 +513,15 @@ class Pipeline:
         with self.db.project(project_id) as uow:
             run_jobs = list(uow.jobs.list_for_run(run_id))
             active = [j for j in run_jobs if j.status in ACTIVE and j.kind != FINALIZE]
-            if not run_jobs or active or not destinations:
+            if not run_jobs or active:
                 return 0
             snapshots = list(uow.phase_snapshots.list_for_run(run_id))
             found = [change for snapshot in snapshots for change in changes.alertable(snapshot)]
-            failed = [j for j in run_jobs if j.status is JobStatus.FAILED]
+            failed = [{"kind": j.kind, "error": (j.last_error or "")[:500]}
+                      for j in run_jobs if j.status is JobStatus.FAILED]
+            failed += [{"kind": PHASE_KINDS[s.phase], "target": s.target,
+                        "error": str(s.stats.get("failure") or s.stats.get("skipped") or "phase failed")[:500]}
+                       for s in snapshots if s.status is PhaseStatus.FAILED]
             meta = run_jobs[0].payload["run"]
             created = 0
             for event, lines in ((changes.ALERT_EVENT, found), (changes.RUN_FAILED_EVENT, failed)):
@@ -506,7 +534,7 @@ class Pipeline:
                     else:
                         if destination.events and event not in destination.events:
                             continue
-                        selected = [{"kind": j.kind, "error": (j.last_error or "")[:500]} for j in failed]
+                        selected = failed
                     if not selected:
                         continue
                     payload = {"project_id": str(project_id), "run_id": str(run_id), "kind": meta.get("kind", "scan"),
@@ -517,6 +545,16 @@ class Pipeline:
                         dedupe_key=f"{event}:{run_id}:{destination.name}",
                     ))
                     created += new
+            # Clear deferred finalizers in the same transaction as the outbox.
+            # Recovery then scans unfinished reconciliations, not every
+            # successful baseline run from the past day.
+            uow.connection.execute(
+                jobs_table.update().where(
+                    jobs_table.c.project_id == project_id, jobs_table.c.run_id == run_id,
+                    jobs_table.c.kind == FINALIZE, jobs_table.c.status == JobStatus.SUCCEEDED.value,
+                    jobs_table.c.result["pending_predecessors"].as_boolean().is_(True),
+                ).values(result={"notifications": created, "pending_predecessors": False})
+            )
             return created
 
 
@@ -567,11 +605,10 @@ def summarize(run_jobs: Sequence[Job], snapshots: Sequence[PhaseSnapshot]) -> Ru
         status = "queued"
     elif JobStatus.CANCELLED in statuses:
         status = "cancelled"
-    elif JobStatus.FAILED in statuses:
-        status = "failed"
-    elif any(s.status is not PhaseStatus.COMPLETED or s.comparison in (PhaseComparison.UNCERTAIN,
-             PhaseComparison.FAILED) for s in snapshots):
-        status = "partial"
+    elif JobStatus.FAILED in statuses or any(s.status is PhaseStatus.FAILED for s in snapshots):
+        status = "failed"  # a job gave up, or a phase observed nothing
+    elif any(s.status is PhaseStatus.PARTIAL or s.comparison is PhaseComparison.UNCERTAIN for s in snapshots):
+        status = "partial"  # real coverage with gaps: pending rules, some hosts unobservable"
     else:
         status = "succeeded"
     finished = [job.finished_at for job in run_jobs if job.finished_at]
@@ -617,7 +654,7 @@ class RunService:
         chosen = sorted({normalize_hostname(t) for t in targets}) if targets else roots
         for target in chosen:
             decision = policy.check_target(target, port=None)
-            if not decision and target not in roots:
+            if not root_allowed(policy, target, decision):
                 raise ScopeViolation(decision)
         if not chosen:
             raise ScopeViolation(policy.check_target("scope.example", port=None))
@@ -729,16 +766,21 @@ class RunService:
 
 def unfinalized_runs(database: Database, *, within: timedelta = timedelta(days=1),
                      limit: int = 100) -> list[tuple[UUID, UUID]]:
-    """``(project_id, run_id)`` of recently stopped runs that ended without their finalize step.
+    """``(project_id, run_id)`` of recent stopped or deferred runs to reconcile.
 
     Covers jobs that failed or were cancelled when their lease expired on the
-    final attempt, which happens inside ``claim`` with no worker code running.
+    final attempt, and a crash after completing a predecessor whose finalizer
+    already ran early. Finalization and outbox writes are idempotent.
     """
     stopped = (select(jobs_table.c.project_id, jobs_table.c.run_id)
                .where(jobs_table.c.run_id.is_not(None),
-                      jobs_table.c.status.in_([JobStatus.FAILED.value, JobStatus.CANCELLED.value]),
+                      or_(jobs_table.c.status.in_([JobStatus.FAILED.value, JobStatus.CANCELLED.value]),
+                          and_(jobs_table.c.kind == FINALIZE,
+                               jobs_table.c.status == JobStatus.SUCCEEDED.value,
+                               jobs_table.c.result["pending_predecessors"].as_boolean().is_(True))),
                       jobs_table.c.finished_at > func.now() - within)
-               .distinct())
+               .group_by(jobs_table.c.project_id, jobs_table.c.run_id)
+               .order_by(func.max(jobs_table.c.finished_at).desc()))
     active = select(jobs_table.c.run_id).where(and_(
         jobs_table.c.status.in_([s.value for s in ACTIVE]), jobs_table.c.run_id.is_not(None)))
     query = stopped.where(jobs_table.c.run_id.not_in(active)).limit(limit)

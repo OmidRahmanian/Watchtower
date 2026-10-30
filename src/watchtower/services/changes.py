@@ -13,8 +13,10 @@ accepted state, the changes, and how much to trust the comparison:
 * ``uncertain``: nothing changed for sure, but some items could not be
   observed (timeouts, refused scope, inconclusive checks) or a change is
   waiting for confirmation.
-* ``failed``: the phase produced nothing usable. Its snapshot is not
-  comparable, so the next run compares with the last good one.
+* ``failed``: the phase produced nothing usable: it crashed, its target was
+  refused, or there was something to observe and none of it could be (every
+  host unreachable). Its snapshot is not comparable, so the next run
+  compares with the last good one, and the run reports ``failed``.
 
 An item the phase could not observe keeps its previous value, so a flaky
 probe never reads as a removal followed by a rediscovery. Debouncing: a
@@ -98,6 +100,10 @@ def _as_map(entries: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]
 
 def compare(previous: PhaseSnapshot | None, observed: Observed, rules: ChangeRules) -> Outcome:
     stats: dict[str, Any] = dict(observed.stats)
+    if observed.items and all(item.uncertain for item in observed.items):
+        # Something was there to observe and none of it could be: a failed scan, not a partial one.
+        observed = Observed(failed=True, stats={**stats, "failure": "nothing could be observed"})
+        stats = dict(observed.stats)
     if observed.failed:
         # Not comparable; keep the previous state on record for anyone reading the run.
         items = list(previous.items) if previous else []

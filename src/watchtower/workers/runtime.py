@@ -38,7 +38,7 @@ from watchtower.config.settings import Settings
 from watchtower.domain.models import Job, JobStatus, Notification
 from watchtower.persistence.database import Database
 from watchtower.services.jobs import (
-    JOB_KINDS, CancelToken, JobCancelled, Pipeline, PipelineAdapters, unfinalized_runs,
+    FINALIZE, JOB_KINDS, CancelToken, JobCancelled, Pipeline, PipelineAdapters, unfinalized_runs,
 )
 from watchtower.services.scope import ScopeService
 
@@ -155,6 +155,11 @@ class Worker:
             done = system.job_leases.complete(job.id, self.worker_id, result)
         if not done:
             log.warning("job %s finished after its lease was lost; the new holder will redo it idempotently", job.id)
+        elif job.kind != FINALIZE:
+            # A second worker can finish the queued finalizer before this
+            # predecessor commits complete(). Recheck now so that early
+            # no-op finalization cannot permanently lose the run's alerts.
+            self.pipeline.finalize(job.project_id, job.run_id)
 
     def _stopped(self, job: Job, stop: JobCancelled) -> None:
         if stop.lease_lost:
@@ -215,7 +220,7 @@ class Notifier:
             self._mark_failed(notification, f"no enabled destination named {notification.channel!r}", None)
             return False
         try:
-            sender.send(destination.url.get_secret_value(), notification, self.transport)
+            sender.send(destination.url.get_secret_value() if destination.url else "", notification, self.transport)
         except DeliveryError as exc:
             retry = None
             if exc.retryable:

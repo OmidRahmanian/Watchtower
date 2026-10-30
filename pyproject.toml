@@ -27,6 +27,7 @@ dev = [
     "celery>=5.4,<6",
     "pymongo>=4.6,<5",
     "pytest>=8",
+    "pyyaml>=6",
 ]
 
 [project.scripts]

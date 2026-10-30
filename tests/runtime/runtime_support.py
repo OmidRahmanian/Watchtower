@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -21,6 +23,7 @@ from watchtower.adapters.checks.base import HttpResponse
 from watchtower.adapters.discovery.dns import NXDomain, NoAnswer, DnsFailure
 from watchtower.adapters.notifications import Response
 from watchtower.config.settings import Settings
+from watchtower.domain.models import NotificationStatus
 from watchtower.domain.scope import NewScopeRevision, ScopeRule
 from watchtower.domain.targets import PortSet
 from watchtower.security.auth import Principal, PrincipalKind, ProjectContext, ProjectRole
@@ -38,6 +41,10 @@ class LabResolver:
         self.lab = lab
 
     def query(self, name, rdtype):
+        self.lab.lookups.append(name)
+        if name == self.lab.block_dns_on and not self.lab.release_dns.is_set():
+            self.lab.dns_blocked.set()
+            self.lab.release_dns.wait(30)
         if name in self.lab.dns_failures:
             raise DnsFailure("SERVFAIL")
         records = self.lab.dns.get(name)
@@ -57,8 +64,7 @@ class LabProber:
     def probe(self, hostname, *, scheme="https", port=None, path="/"):
         self.lab.probes.append((scheme, hostname))
         if hostname in self.lab.hang:
-            self.lab.hanging.set()
-            threading.Event().wait(3600)
+            self.lab.stuck()
         if hostname in self.lab.explode and self.lab.explode[hostname] > 0:
             self.lab.explode[hostname] -= 1
             raise RuntimeError(f"probe of {hostname} crashed")
@@ -94,11 +100,25 @@ class Lab:
     probes: list = field(default_factory=list)
     fetches: list = field(default_factory=list)
     hanging: threading.Event = field(default_factory=threading.Event)
+    hang_fetch: set = field(default_factory=set)  # hosts whose check requests never return
+    marker: str = ""  # touched when something hangs, for tests in another process
+    lookups: list = field(default_factory=list)
+    block_dns_on: str = ""  # a lookup of this name waits for release_dns
+    dns_blocked: threading.Event = field(default_factory=threading.Event)
+    release_dns: threading.Event = field(default_factory=threading.Event)
     approved: bool = True
 
+    def stuck(self):
+        self.hanging.set()
+        if self.marker:
+            Path(self.marker).write_text("stuck")
+        threading.Event().wait(3600)
+
     def fetch(self, method, url, ip):
-        self.fetches.append((method, url, ip))
         host = url.split("://", 1)[1].split("/", 1)[0]
+        if host in self.hang_fetch:
+            self.stuck()
+        self.fetches.append((method, url, ip))
         if url.endswith("/.git/config") and host in self.exposed:
             return HttpResponse(200, (("Content-Type", "text/plain"),), GIT_CONFIG)
         return HttpResponse(404, (), b"not found")
@@ -175,9 +195,26 @@ class Runs:
 
     def run(self, **start):
         summary = self.service.start_run(self.project_id, actor=self.actor, **start)
-        self.worker().run_until_idle()
-        self.notifier().run_until_idle()
-        return self.service.get_run(self.project_id, summary.run_id, actor=self.actor)
+        worker, notifier = self.worker(), self.notifier()
+        deadline = time.monotonic() + 30
+        while True:
+            # A momentarily empty SKIP LOCKED claim is not proof that the
+            # run (or a zero-backoff notification retry) has finished.
+            worker.run_until_idle()
+            notifier.run_until_idle()
+            detail = self.service.get_run(self.project_id, summary.run_id, actor=self.actor)
+            notifications = self.service.list_notifications(
+                self.project_id, actor=self.actor, run_id=summary.run_id)
+            pending = [n for n in notifications if n.status in (NotificationStatus.PENDING,
+                                                               NotificationStatus.SENDING)]
+            if detail.summary.status not in ("queued", "running") and not pending:
+                return detail
+            assert time.monotonic() < deadline, {
+                "run_status": detail.summary.status,
+                "jobs": [(j.kind, j.status, j.attempts) for j in detail.jobs],
+                "notifications": [(n.status, n.attempts, n.last_error) for n in pending],
+            }
+            time.sleep(0.01)
 
     def alerts(self) -> list[dict]:
         return [r["body"] for r in self.transport.requests]
@@ -218,3 +255,15 @@ def operator(project_id):
 @pytest.fixture
 def viewer(project_id):
     return context(project_id, ProjectRole.VIEWER)
+
+
+def two_root_lab(*, changed: bool = False) -> Lab:
+    """example.com and example.org; ``changed`` adds api.example.org and exposes both shops."""
+    lab = Lab()
+    for host in ("www.example.org", "shop.example.org") + (("api.example.org",) if changed else ()):
+        lab.seeds.append(host)
+        lab.dns[host] = {"A": [PUBLIC_IP]}
+        lab.http[("https", host)] = (200, host.split(".")[0].title())
+    if changed:
+        lab.exposed |= {"shop.example.com", "shop.example.org"}
+    return lab

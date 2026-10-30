@@ -83,8 +83,7 @@ def test_a_flapping_value_is_debounced_away(runs, lab):
 
 def test_unobservable_items_are_uncertain_never_removed(runs, lab):
     runs.run()
-    lab.dns_failures.add("shop.example.com")
-    lab.http[("https", "www.example.com")] = "timeout"
+    lab.dns_failures.add("shop.example.com")  # www still answers, so the scan is real but has a gap
     for _ in range(3):  # longer than the confirmation window
         flaky = runs.run()
         assert comparisons(flaky)[("dns", "example.com")] == "uncertain"
@@ -93,10 +92,47 @@ def test_unobservable_items_are_uncertain_never_removed(runs, lab):
     assert runs.alerts() == []
 
     lab.dns_failures.clear()
-    lab.http[("https", "www.example.com")] = (200, "Example")
     recovered = runs.run()
     assert set(comparisons(recovered).values()) == {"unchanged"}
     assert runs.alerts() == []
+
+
+def test_a_scan_that_observes_nothing_is_failed_not_partial(runs, lab):
+    """Every host unreachable: a failed scan, alerted as such, that never reads as removals."""
+    runs.run()
+    lab.http = {key: "timeout" for key in lab.http}
+    down = runs.run()
+    [http] = [s for s in down.snapshots if s.phase is RunPhase.HTTP]
+    assert (http.status, http.comparison) == (PhaseStatus.FAILED, PhaseComparison.FAILED)
+    assert http.stats["failure"] == "nothing could be observed"
+    assert down.summary.status == "failed"
+    [alert] = runs.alerts()
+    assert alert["event_type"] == "monitor.run_failed"
+    assert alert["payload"]["failed_jobs"] == [
+        {"kind": "monitor.http", "target": "example.com", "error": "nothing could be observed"}]
+
+    lab.dns_failures |= {"www.example.com", "shop.example.com"}  # DNS gone too
+    assert runs.run().summary.status == "failed"
+
+    lab.dns_failures.clear()
+    lab.http = {("https", "www.example.com"): (200, "Example"), ("https", "shop.example.com"): (200, "Shop")}
+    back = runs.run()
+    # Compared with the last good scan: nothing was removed, nothing is rediscovered.
+    assert set(comparisons(back).values()) == {"unchanged"} and back.summary.status == "succeeded"
+    assert [a["event_type"] for a in runs.alerts()] == ["monitor.run_failed", "monitor.run_failed"]
+
+
+def test_checks_that_all_fail_are_a_failed_scan(runs, lab):
+    runs.run()
+
+    def broken(method, url, ip):
+        raise ConnectionResetError("reset by peer")
+
+    runs.lab.fetch = broken
+    detail = runs.run()
+    [checks] = [s for s in detail.snapshots if s.phase is RunPhase.CHECKS]
+    assert checks.status is PhaseStatus.FAILED and detail.summary.status == "failed"
+    assert [a["event_type"] for a in runs.alerts()] == ["monitor.run_failed"]
 
 
 def test_a_dns_change_alerts_once(runs, lab):

@@ -115,20 +115,28 @@ class RuntimeSettings(_Section):
 
 
 class NotificationDestination(_Section):
-    """Where notifications for one channel go. The URL embeds a credential, so it is a secret."""
+    """Where notifications for one channel go. The URL embeds a credential, so it is a secret.
+
+    ``kind = "log"`` delivers nowhere: the notifier logs the alert and marks it
+    sent, so it stays in the outbox for the CLI and dashboard. It takes no URL.
+    """
 
     name: str = Field(pattern=_KEY)  # matched against NewNotification.channel
-    kind: Literal["discord", "slack", "telegram", "webhook"]
-    url: SecretStr
+    kind: Literal["discord", "slack", "telegram", "webhook", "log"]
+    url: SecretStr | None = None
     events: tuple[str, ...] = ()  # event types to deliver; empty delivers all
     enabled: bool = True
 
-    @field_validator("url")
-    @classmethod
-    def _https(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().startswith("https://"):
+    @model_validator(mode="after")
+    def _url_for_kind(self) -> NotificationDestination:
+        if self.kind == "log":
+            if self.url is not None:
+                raise ValueError("log destinations take no url")
+        elif self.url is None:
+            raise ValueError(f"{self.kind} destinations need a url")
+        elif not self.url.get_secret_value().startswith("https://"):
             raise ValueError("notification URLs must use https://")
-        return value
+        return self
 
 
 class NotificationSettings(_Section):

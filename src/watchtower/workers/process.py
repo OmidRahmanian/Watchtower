@@ -27,21 +27,26 @@ POLL_SECONDS = 0.1
 
 
 def kill_group(pid: int, grace: float = 2.0) -> None:
-    """SIGTERM the process group led by ``pid``, then SIGKILL whatever is left after ``grace``."""
+    """SIGTERM the process group led by ``pid``, then SIGKILL whatever is left after ``grace``.
+
+    ``ProcessLookupError`` means the group is empty. macOS reports
+    ``PermissionError`` instead when only zombies are left (the unreaped
+    leader), so that also counts as gone.
+    """
     try:
         os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
         try:
             os.killpg(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return
         time.sleep(0.05)
     try:
         os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
 

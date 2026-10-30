@@ -1,0 +1,83 @@
+# Workers, scheduler and notifier over RabbitMQ, layered on compose.yaml:
+#
+#   docker compose -f deploy/compose.yaml -f deploy/compose.workers.yaml --env-file deploy/.env up -d
+#
+# Isolation:
+# * PostgreSQL and RabbitMQ sit on the internal "backend" network, which has
+#   no route out; only the workers and the notifier join it.
+# * Scanning workers additionally join "egress" to reach in-scope targets and
+#   passive sources; the notifier joins "notify" to reach webhooks. Beat needs
+#   only the backend.
+# * No container mounts the Docker socket, runs privileged, or uses the host
+#   network; every runtime container drops all capabilities, runs as an
+#   unprivileged user on a read-only root filesystem, and installs the
+#   in-process egress guard (watchtower.workers.egress), which refuses
+#   loopback, link-local, metadata and private destinations other than the
+#   database, the broker and the configured resolvers.
+name: watchtower-platform
+
+x-runtime: &runtime
+  build:
+    context: ..
+    dockerfile: deploy/worker.Dockerfile
+  image: watchtower-worker:dev
+  restart: unless-stopped
+  user: "10001:10001"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=64m"]
+  environment: &runtime-env
+    WATCHTOWER_PROFILE: production
+    WATCHTOWER_PROFILE_DIR: /app/config/profiles
+    WATCHTOWER__DATABASE__URL: postgresql+psycopg://watchtower:${WATCHTOWER_DB_PASSWORD:?set WATCHTOWER_DB_PASSWORD}@postgres:5432/watchtower
+    WATCHTOWER__RUNTIME__BROKER_URL: amqp://watchtower:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in deploy/.env}@rabbitmq:5672//
+    WATCHTOWER__NOTIFICATIONS__DESTINATIONS: ${WATCHTOWER_NOTIFICATION_DESTINATIONS:-[]}
+  depends_on:
+    postgres: {condition: service_healthy}
+    rabbitmq: {condition: service_healthy}
+
+services:
+  postgres:
+    networks: [backend]
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: watchtower
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in deploy/.env}
+    volumes:
+      - ../data/rabbitmq:/var/lib/rabbitmq
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    <<: *runtime
+    command: ["celery", "-A", "watchtower.workers.celery_app", "worker", "--queues", "watchtower",
+              "--prefetch-multiplier", "1", "--without-gossip", "--without-mingle"]
+    volumes:
+      - ../data/evidence:/app/data/evidence
+    networks: [backend, egress]
+    stop_grace_period: 90s  # in-flight jobs are requeued on SIGTERM
+
+  notifier:
+    <<: *runtime
+    command: ["celery", "-A", "watchtower.workers.celery_app", "worker", "--queues", "watchtower.notify",
+              "--concurrency", "1", "--prefetch-multiplier", "1", "--without-gossip", "--without-mingle"]
+    networks: [backend, notify]
+
+  beat:
+    <<: *runtime
+    command: ["celery", "-A", "watchtower.workers.celery_app", "beat", "--schedule", "/tmp/celerybeat-schedule"]
+    networks: [backend]
+
+networks:
+  backend:
+    internal: true
+  egress: {}
+  notify: {}

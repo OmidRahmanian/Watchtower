@@ -15,6 +15,7 @@ redelivery from a new alert.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import ssl
 from collections.abc import Callable, Iterable, Mapping
@@ -27,6 +28,7 @@ from watchtower.domain.models import Notification
 from watchtower.security.destinations import DestinationPolicy
 
 USER_AGENT = "WatchTower-notifier/1"
+log = logging.getLogger("watchtower.notifications")
 TIMEOUT = 10.0
 MAX_LINES = 25
 _CONTROL = re.compile(r"[\x00-\x1f\x7f​-‏‪-‮⁦-⁩]")
@@ -160,7 +162,8 @@ def render(notification: Notification) -> tuple[str, list[str]]:
     run = str(payload.get("run_id", ""))[:8]
     targets = ", ".join(clean(t, 80) for t in payload.get("targets", []))
     if notification.event_type == "monitor.run_failed":
-        lines = [f"{clean(j.get('kind'), 40)}: {clean(j.get('error'), 200)}" for j in payload.get("failed_jobs", [])]
+        lines = [f"{clean(j.get('kind'), 40)}{' ' + clean(j['target'], 80) if j.get('target') else ''}: "
+                 f"{clean(j.get('error'), 200)}" for j in payload.get("failed_jobs", [])]
         return f"WatchTower run {run} failed ({targets})", lines
     found = payload.get("changes", [])
     lines = [_describe(change) for change in found[:MAX_LINES]]
@@ -239,6 +242,17 @@ class WebhookSender:
         _check(transport.post(url, json.dumps(body, default=str).encode(), _headers(notification)), "webhook")
 
 
+class LogSender:
+    """Delivers nowhere: logs the alert so it is marked sent and stays readable in the outbox."""
+
+    def send(self, url: str, notification: Notification, transport: Transport) -> None:
+        title, lines = render(notification)
+        log.info("%s [%s]", title, notification.dedupe_key)
+        for line in lines:
+            log.info("  %s", line)
+
+
 SENDERS: dict[str, Sender] = {
     "discord": DiscordSender(), "slack": SlackSender(), "telegram": TelegramSender(), "webhook": WebhookSender(),
+    "log": LogSender(),
 }

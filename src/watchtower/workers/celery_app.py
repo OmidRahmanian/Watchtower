@@ -24,6 +24,7 @@ from celery.signals import worker_process_init
 from watchtower.config.settings import Settings, load_settings
 
 QUEUE = "watchtower"
+NOTIFY_QUEUE = "watchtower.notify"  # consumed only by the notifier, which cannot reach targets
 TASK_WORK = "watchtower.work"
 TASK_DELIVER = "watchtower.deliver"
 TASK_RECOVER = "watchtower.recover"
@@ -35,6 +36,7 @@ def configure(app: Celery, settings: Settings, *, schedule_every: timedelta = ti
     app.conf.update(
         broker_url=broker,
         task_default_queue=QUEUE,
+        task_routes={TASK_DELIVER: {"queue": NOTIFY_QUEUE}},
         task_serializer="json",
         accept_content=["json"],
         result_backend=None,
