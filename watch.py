@@ -11,24 +11,42 @@ import schedule
 import time
 import hashlib
 import traceback
+from pathlib import Path
+from session import acquire_session, running_pid
 
 
-# TODO: Add your Discord webhook URLs as environment variables before running.
-new_sub_webhook = SyncWebhook.from_url(os.environ["NEW_SUB_WEBHOOK_URL"])
-new_res_webhook = SyncWebhook.from_url(os.environ["NEW_RES_WEBHOOK_URL"])
-http_change_webhook = SyncWebhook.from_url(os.environ["HTTP_CHANGE_WEBHOOK_URL"])
-new_http_webhook = SyncWebhook.from_url(os.environ["NEW_HTTP_WEBHOOK_URL"])
-nuclei_webhook = SyncWebhook.from_url(os.environ["NUCLEI_WEBHOOK_URL"])
-other_webhook = SyncWebhook.from_url(os.environ["OTHER_WEBHOOK_URL"])
+notifications_enabled = json.loads(Path("setting.json").read_text())["sendmessage"]["status"] == "enable"
 
-# TODO: Add your Telegram bot tokens and chat ID as environment variables before running.
-telegram_chat_id = os.environ["TELEGRAM_CHAT_ID"]
-new_sub_telegram = os.environ["NEW_SUB_TELEGRAM_TOKEN"]
-new_res_telegram = os.environ["NEW_RES_TELEGRAM_TOKEN"]
-http_change_telegram = os.environ["HTTP_CHANGE_TELEGRAM_TOKEN"]
-new_http_telegram = os.environ["NEW_HTTP_TELEGRAM_TOKEN"]
-nuclei_telegram = os.environ["NUCLEI_TELEGRAM_TOKEN"]
-other_telegram = os.environ["OTHER_TELEGRAM_TOKEN"]
+
+class DisabledWebhook:
+    def send(self, *args, **kwargs):
+        return None
+
+
+def configured_webhook(name):
+    if not notifications_enabled:
+        return DisabledWebhook()
+    url = os.environ.get(name)
+    if not url:
+        raise RuntimeError(f"{name} is missing. Run python3 launcher.py to configure notifications.")
+    return SyncWebhook.from_url(url)
+
+
+new_sub_webhook = configured_webhook("NEW_SUB_WEBHOOK_URL")
+new_res_webhook = configured_webhook("NEW_RES_WEBHOOK_URL")
+http_change_webhook = configured_webhook("HTTP_CHANGE_WEBHOOK_URL")
+new_http_webhook = configured_webhook("NEW_HTTP_WEBHOOK_URL")
+nuclei_webhook = configured_webhook("NUCLEI_WEBHOOK_URL")
+other_webhook = configured_webhook("OTHER_WEBHOOK_URL")
+
+# Telegram is optional when Discord notifications are configured.
+telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "") if notifications_enabled else ""
+new_sub_telegram = os.environ.get("NEW_SUB_TELEGRAM_TOKEN", "")
+new_res_telegram = os.environ.get("NEW_RES_TELEGRAM_TOKEN", "")
+http_change_telegram = os.environ.get("HTTP_CHANGE_TELEGRAM_TOKEN", "")
+new_http_telegram = os.environ.get("NEW_HTTP_TELEGRAM_TOKEN", "")
+nuclei_telegram = os.environ.get("NUCLEI_TELEGRAM_TOKEN", "")
+other_telegram = os.environ.get("OTHER_TELEGRAM_TOKEN", "")
 
 
 
@@ -46,7 +64,8 @@ def tsubsendmessage(domain, sub, provider, action):
     msg += "Resource : "
     msg += f"""```
 {provider}```"""
-    requests.get(f"https://api.telegram.org/bot{new_sub_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
+    if telegram_chat_id and new_sub_telegram:
+        requests.get(f"https://api.telegram.org/bot{new_sub_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
 
 def tsubressendmessage(domain, sub, provider, action):
     msg = f"========== ***New {domain} {action}*** ===========\n"
@@ -59,7 +78,8 @@ def tsubressendmessage(domain, sub, provider, action):
     msg += "Resource : "
     msg += f"""```
 {provider}```"""
-    requests.get(f"https://api.telegram.org/bot{new_res_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
+    if telegram_chat_id and new_res_telegram:
+        requests.get(f"https://api.telegram.org/bot{new_res_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
     new_res_webhook.send(msg)
 
 def thttpxsendmessage(subdomain, old, new, action):
@@ -73,7 +93,8 @@ def thttpxsendmessage(subdomain, old, new, action):
     msg += "Date : "
     msg += f"""```
 {str(date.today())}```"""
-    requests.get(f"https://api.telegram.org/bot{http_change_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
+    if telegram_chat_id and http_change_telegram:
+        requests.get(f"https://api.telegram.org/bot{http_change_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
 
 
 def subsendmessage(domain, sub, provider, action):
@@ -117,17 +138,26 @@ def httpxsendmessage(subdomain, old, new, action):
 
 def subfinder():
     mongo = pymongo.MongoClient("mongodb://localhost:27017/")
-    targets = json.loads(open("targets.json", "r").read())
+    targets = json.loads(Path("targets.json").read_text())
+    status = json.loads(Path("setting.json").read_text())
     subfindersublist = []
     for finderdomain in targets:
         if finderdomain == "":
             continue
         db = mongo[str(finderdomain).replace(".", "-")]
         col = db["all"]
-        subfinder = subprocess.getoutput(f"subfinder -d {finderdomain} -all -silent")
-        subfinder = subfinder.strip()
+        print(f"Discovering subdomains for {finderdomain}...", flush=True)
+        result = subprocess.run(
+            ["subfinder", "-d", finderdomain, "-all", "-silent"],
+            capture_output=True, text=True, check=True,
+        )
         
-        for subfindersub in subfinder.split("\n"):
+        for subfindersub in result.stdout.splitlines():
+            subfindersub = subfindersub.strip().lower()
+            if not subfindersub or not (
+                subfindersub == finderdomain or subfindersub.endswith("." + finderdomain)
+            ):
+                continue
             if str(subfindersub) in targets[finderdomain]['out_of_scope']:
                 continue
             exist = col.find_one({"subdomain": subfindersub})
@@ -139,10 +169,10 @@ def subfinder():
                     'provider': 'Subfinder'
                 }
                 col.insert_one(subfinddata)
-                status = json.loads(open("setting.json","r").read())
                 if str(status['sendmessage']['status']) == "enable":
                     subsendmessage(finderdomain, subfindersub, 'Subfinder', 'Subdomain')
                     tsubsendmessage(finderdomain, subfindersub, 'Subfinder', 'Subdomain')
+    print(f"Discovery complete: {len(subfindersublist)} new subdomain(s).", flush=True)
     if len(subfindersublist) > 0:
         if str(status['new_sub_nuclei']['status']) == "enable":
             nuclei(subfindersublist)
@@ -531,7 +561,8 @@ def httpx():
                     msg += f"""```arm
 {str(date.today())}```"""
                     new_http_webhook.send(msg)
-                    requests.get(f"https://api.telegram.org/bot{new_http_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
+                    if telegram_chat_id and new_http_telegram:
+                        requests.get(f"https://api.telegram.org/bot{new_http_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
         rm = subprocess.getoutput(f"rm -rf files/{httpxdomain}-{today}-httpx.txt files/{httpxdomain}-{today}.txt")
         if len(new) > 0:
             nuclei(new)
@@ -569,12 +600,14 @@ def new_template():
                 nuclei = subprocess.getoutput(f"nuclei -l files/{file} -t {newtemplates} -o output/{check}_{str(td.today().strftime('%Y/%m/%d'))}.txt -silent")
                 for i in nuclei.split("\n"):
                     nuclei_webhook.send(f"```{i}```")
-                    requests.get(f"https://api.telegram.org/bot{nuclei_telegram}/sendMessage?chat_id={telegram_chat_id}&text=```{i}```&parse_mode=MarkDown")
+                    if telegram_chat_id and nuclei_telegram:
+                        requests.get(f"https://api.telegram.org/bot{nuclei_telegram}/sendMessage?chat_id={telegram_chat_id}&text=```{i}```&parse_mode=MarkDown")
         msg = f"========== ***New Nuclei Templates*** ===========\n"
         for i in newtemplates.split("\n"):
             msg += f"`{i}`"
         nuclei_webhook.send(msg)
-        requests.get(f"https://api.telegram.org/bot{nuclei_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
+        if telegram_chat_id and nuclei_telegram:
+            requests.get(f"https://api.telegram.org/bot{nuclei_telegram}/sendMessage?chat_id={telegram_chat_id}&text={msg}&parse_mode=MarkDown")
         # subprocess.getoutput(f"echo '{New Nuclei Templates : \n{newtemplates}}' | notify -silent")
     mv = subprocess.getoutput("rm -rf last-nuclei && mv nuclei-templates last-nuclei")
     remove_files = subprocess.getoutput("rm -rf files/*")
@@ -592,100 +625,77 @@ def nuclei(list):
     nuclei = subprocess.getoutput(f"nuclei -l newsubs.txt {str(status['nuclei_command']['command'])} -o output/{time}.txt")
     for i in nuclei.split("\n"):
         nuclei_webhook.send(f"```{i}```")
-        requests.get(f"https://api.telegram.org/bot{nuclei_telegram}/sendMessage?chat_id={telegram_chat_id}&text=```{i}```&parse_mode=MarkDown")
+        if telegram_chat_id and nuclei_telegram:
+            requests.get(f"https://api.telegram.org/bot{nuclei_telegram}/sendMessage?chat_id={telegram_chat_id}&text=```{i}```&parse_mode=MarkDown")
     rm = subprocess.getoutput("rm -rf newsubs.txt")
 
-while True:
-    try:
-        lastfile = open("setting.json","r").read()
-        setting = json.loads(lastfile)
-        h = open("setting.json","rb").read()
-        hash = hashlib.md5(h).hexdigest()
-        subfinder_setting = setting['subfinder']
-        crt_setting = setting['crt']
-        securitytrials_setting = setting['securitytrials']
-        static_resolve_setting = setting['static_resolve']
-        all_resolve_setting = setting['all_resolve']
-        dynamic_resolve_setting = setting['dynamic_resolve']
-        httpx_setting = setting['httpx']
-        new_template_setting = setting['new_template']
 
-        if subfinder_setting['status'] == "enable":
-            subfinder_job = schedule.every(int(subfinder_setting['value'])).__getattribute__(subfinder_setting['time']).do(subfinder)
-        else:
-            try:
-                schedule.cancel_job(subfinder_job)
-            except:
-                pass
-        
-        if crt_setting['status'] == "enable":
-            crt_job = schedule.every(int(crt_setting['value'])).__getattribute__(crt_setting['time']).do(crt)
-        else:
-            try:
-                schedule.cancel_job(crt_job)
-            except:
-                pass
-        
-        if securitytrials_setting['status'] == "enable":
-            securitytrials_job = schedule.every(int(securitytrials_setting['value'])).__getattribute__(securitytrials_setting['time']).do(securitytrials)
-        else:
-            try:
-                schedule.cancel_job(securitytrials_job)
-            except:
-                pass
-        
-        if static_resolve_setting['status'] == "enable":
-            static_resolve_job = schedule.every(int(static_resolve_setting['value'])).__getattribute__(static_resolve_setting['time']).do(static_resolve)
-        else:
-            try:
-                schedule.cancel_job(static_resolve_job)
-            except:
-                pass
-        
-        if all_resolve_setting['status'] == "enable":
-            all_resolve_job = schedule.every(int(all_resolve_setting['value'])).__getattribute__(all_resolve_setting['time']).do(all_resolve)
-        else:
-            try:
-                schedule.cancel_job(all_resolve_job)
-            except:
-                pass
-        
-        if dynamic_resolve_setting['status'] == "enable":
-            dynamic_resolve_job = schedule.every(int(dynamic_resolve_setting['value'])).__getattribute__(dynamic_resolve_setting['time']).do(dynamic_resolve)
-        else:
-            try:
-                schedule.cancel_job(dynamic_resolve_job)
-            except:
-                pass
-        
-        if httpx_setting['status'] == "enable":
-            httpx_job = schedule.every(int(httpx_setting['value'])).__getattribute__(httpx_setting['time']).do(httpx)
-        else:
-            try:
-                schedule.cancel_job(httpx_job)
-            except:
-                pass
-        
-        if new_template_setting['status'] == "enable":
-            new_template_job = schedule.every(int(new_template_setting['value'])).__getattribute__(new_template_setting['time']).do(new_template)
-        else:
-            try:
-                schedule.cancel_job(new_template_job)
-            except:
-                pass
-        while True:
-            newhash = hashlib.md5(open("setting.json","rb").read()).hexdigest()
-            if str(newhash) == hash:
-                schedule.run_pending()
-                time.sleep(10)
-            else:
-                break
+def run_job(callback):
+    print(f"Starting {callback.__name__}...", flush=True)
+    try:
+        callback()
     except Exception:
-        er = traceback.format_exc()
-        print(er)
-        other_webhook.send("Tower Stoped\nCheck it")
-        requests.get(f"https://api.telegram.org/bot{other_telegram}/sendMessage?chat_id={telegram_chat_id}&text=Tower+Stoped%0a%0a{er}")
-        subprocess.getoutput("sudo systemctl unmask mongod")
-        subprocess.getoutput("sudo service mongod start")
-        # time.sleep(60)
-        # other_webhook.send(traceback.format_exc())
+        print(traceback.format_exc(), flush=True)
+        try:
+            other_webhook.send(f"WatchTower job failed: {callback.__name__}. Check files/watchtower.log.")
+            if telegram_chat_id and other_telegram:
+                requests.post(
+                    f"https://api.telegram.org/bot{other_telegram}/sendMessage",
+                    data={"chat_id": telegram_chat_id, "text": f"WatchTower job failed: {callback.__name__}."},
+                    timeout=15,
+                )
+        except Exception:
+            print("Could not deliver the error notification.", flush=True)
+    finally:
+        print(f"Finished {callback.__name__}.", flush=True)
+
+
+def main():
+    root = Path(__file__).resolve().parent
+    inherited_fd = os.environ.pop("WATCHTOWER_LOCK_FD", None)
+    if inherited_fd is None and running_pid(root):
+        raise RuntimeError("WatchTower is already running. Use launcher.py to change its target.")
+    with acquire_session(root, inherited_fd):
+        pid_path = root / "files/watchtower.pid"
+        pid_path.write_text(str(os.getpid()) + "\n")
+        try:
+            callbacks = {
+                "subfinder": subfinder,
+                "crt": crt,
+                "securitytrials": securitytrials,
+                "static_resolve": static_resolve,
+                "all_resolve": all_resolve,
+                "dynamic_resolve": dynamic_resolve,
+                "httpx": httpx,
+                "new_template": new_template,
+            }
+            while True:
+                contents = Path("setting.json").read_bytes()
+                settings = json.loads(contents)
+                schedule.clear()
+                for name, callback in callbacks.items():
+                    config = settings[name]
+                    if config["status"] != "enable":
+                        continue
+                    interval = int(config["value"])
+                    if interval < 1 or config["time"] not in ("seconds", "minutes", "hours", "days", "weeks"):
+                        raise ValueError(f"Invalid schedule for {name}.")
+                    job = getattr(schedule.every(interval), config["time"]).do(run_job, callback)
+                    print(f"  {name}: next run {job.next_run}", flush=True)
+                print(f"WatchTower running: {len(schedule.jobs)} scheduled jobs", flush=True)
+                print("Targets: " + ", ".join(json.loads(Path("targets.json").read_text())), flush=True)
+                print("Notifications: " + ("enabled" if notifications_enabled else "disabled"), flush=True)
+                while Path("setting.json").read_bytes() == contents:
+                    schedule.run_pending()
+                    time.sleep(1)
+                print("Settings changed; rebuilding the schedule.", flush=True)
+        finally:
+            if pid_path.exists() and pid_path.read_text().strip() == str(os.getpid()):
+                pid_path.unlink()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nWatchTower stopped.", flush=True)
