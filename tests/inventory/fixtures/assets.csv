@@ -1,0 +1,8 @@
+hostname,root_domain,ownership_confidence,discovered_at,note
+www.example.com,example.com,0.95,2026-10-01T00:00:00Z,marketing site
+vpn.example.com,example.com,,2026-10-02T12:00:00Z,
+https://bad.example.com/,example.com,,,url not hostname
+203.0.113.9,example.com,,,ip literal
+shop.example.org,example.com,,,outside root
+admin.example.com,example.com,1.5,,bad confidence
+,,,,

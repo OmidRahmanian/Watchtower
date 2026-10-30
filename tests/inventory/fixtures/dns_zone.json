@@ -1,0 +1,17 @@
+{
+  "_comment": "Fake DNS answers. 'wildcards' maps a parent zone to the answers every unknown child receives.",
+  "records": {
+    "example.com": {"A": ["198.51.100.10"]},
+    "www.example.com": {"A": ["198.51.100.10"], "AAAA": ["2001:db8::10"]},
+    "api.example.com": {"CNAME": ["api-lb.cdn.example.net"], "A": ["198.51.100.20"]},
+    "mail.example.com": {"A": ["198.51.100.30"]},
+    "vpn.example.com": {"A": ["198.51.100.40"]},
+    "real.dev.example.com": {"A": ["198.51.100.60"]}
+  },
+  "wildcards": {
+    "dev.example.com": {"A": ["203.0.113.50", "203.0.113.51"]}
+  },
+  "after_ip_change": {
+    "www.example.com": {"A": ["198.51.100.11"], "AAAA": ["2001:db8::10"]}
+  }
+}
