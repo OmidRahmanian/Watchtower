@@ -34,6 +34,7 @@ class RunSummary:
     kind: str
     reason: str
     status: str
+    targets: tuple[str, ...] = ()
     job_counts: dict[str, int] = field(default_factory=dict)
     phases: list[PhaseState] = field(default_factory=list)
     last_error: str | None = None

@@ -140,6 +140,7 @@ class App:
     style: Style
     runs_factory: Callable[[Database, ScopeService], RunsPort | None] = default_runs
     _runs: RunsPort | None = None
+    work_step: Callable[[], int] | None = None  # replaces the in-process worker for --work (tests)
 
     @property
     def runs(self) -> RunsPort:
@@ -378,6 +379,9 @@ def cmd_run_show(app: App, args: argparse.Namespace) -> int:
     app.say(f"  created {when(run.created_at)}  finished {when(run.finished_at)}  reason {safe(run.reason) or '-'}")
     if run.last_error:
         app.say("  " + app.style(f"error: {safe(run.last_error)}", "red"))
+    if detail.retest_outcome:
+        app.say(f"  retest outcome: {safe(detail.retest_outcome)}")
+    _say_not_run(app, detail)
     table(app.out, [[j.kind, app.style(j.status, RUN_COLOURS.get(j.status, "bold")), f"{j.attempts}/{j.max_attempts}",
                      safe((j.result or {}).get("outcome", "")), safe(j.last_error or "")] for j in detail.jobs],
           ["job", "status", "attempts", "outcome", "error"])
@@ -386,6 +390,13 @@ def cmd_run_show(app: App, args: argparse.Namespace) -> int:
         app.say(f"  {snapshot.phase:<9} {safe(snapshot.target)}: {snapshot.status}, {snapshot.comparison}"
                 + (f", {changes} change(s)" if changes else ""))
     return 0
+
+
+def _say_not_run(app: App, detail: schemas.RunDetailOut) -> None:
+    for rule_id, reason in detail.checks_not_run.items():
+        app.say(app.style(f"Check {safe(rule_id)} did not run: {safe(reason)}", "yellow"))
+    if detail.retest_outcome == "not_run":
+        app.say(app.style("The retest did not run, so the finding was left unchanged.", "yellow"))
 
 
 def cmd_run_cancel(app: App, args: argparse.Namespace) -> int:
@@ -410,6 +421,8 @@ def _run_id(app: App, ctx: ProjectContext, reference: str) -> UUID:
 
 def _worker(app: App) -> Callable[[], int]:
     """Drive the queue in this process: run due jobs, then deliver notifications."""
+    if app.work_step is not None:
+        return app.work_step
     try:
         from watchtower.workers.runtime import Notifier, Worker
     except ImportError:
@@ -587,10 +600,7 @@ def cmd_finding_retest(app: App, args: argparse.Namespace) -> int:
         after = _finding(app, ctx, str(target.id))
         app.say(f"Finding {str(target.id)[:8]}: {after.status.value}, {remediation_label(app, after.remediation)}")
         detail = schemas.run_detail_out(app.runs.get_run(ctx.project_id, run.run_id, actor=ctx))
-        for job in detail.jobs:
-            outcome = (job.result or {}).get("outcome")
-            if outcome == "not_run":
-                app.say(app.style("Retest did not run: " + safe((job.result or {}).get("detail", "")), "yellow"))
+        _say_not_run(app, detail)
         return code
     return 0
 
@@ -804,17 +814,17 @@ def _database(settings: Settings) -> Iterator[Database]:
         database.dispose()
 
 
-def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None,
-         database: Database | None = None, runs: RunsPort | None = None) -> int:
-    """Entry point. Tests pass ``database`` and ``runs`` to run in-process."""
+def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None, database: Database | None = None,
+         runs: RunsPort | None = None, work: Callable[[], int] | None = None) -> int:
+    """Entry point. Tests pass ``database``, ``runs`` and ``work`` to run in-process."""
     out = out or sys.stdout
     args = build_parser().parse_args(argv)
     try:
         settings = load_settings(args.profile)
         if database is None:
             with _database(settings) as owned:
-                return _dispatch(settings, owned, out, args, runs)
-        return _dispatch(settings, database, out, args, runs)
+                return _dispatch(settings, owned, out, args, runs, work)
+        return _dispatch(settings, database, out, args, runs, work)
     except CliError as error:
         print(f"watchtower: {error}", file=sys.stderr)
         return 1
@@ -832,9 +842,9 @@ def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None,
 
 
 def _dispatch(settings: Settings, database: Database, out: TextIO, args: argparse.Namespace,
-              runs: RunsPort | None) -> int:
+              runs: RunsPort | None, work: Callable[[], int] | None) -> int:
     scope = ScopeService(database, settings.scope)
-    app = App(settings=settings, database=database, scope=scope, out=out, style=Style(out))
+    app = App(settings=settings, database=database, scope=scope, out=out, style=Style(out), work_step=work)
     if runs is not None:
         app._runs = runs
     return args.handler(app, args)

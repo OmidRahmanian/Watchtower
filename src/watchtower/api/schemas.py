@@ -393,6 +393,7 @@ class RunOut(_Out):
     scope_revision_id: UUID | None
     requested_by: str | None
     reason: str
+    targets: list[str]
     job_counts: dict[str, int]
     phases: list[PhaseStateOut]
     last_error: str | None
@@ -428,6 +429,11 @@ class RunDetailOut(_Out):
     run: RunOut
     jobs: list[JobOut]
     snapshots: list[SnapshotOut]
+    # Checks that should have run but did not (for example, rules pending
+    # maintainer approval), by rule id. A run with entries here proves nothing
+    # about those checks.
+    checks_not_run: dict[str, str]
+    retest_outcome: str | None  # detected | not_detected | failed | inconclusive | not_run, for retest runs
 
 
 class AlertOut(_Out):
@@ -451,7 +457,7 @@ def run_out(summary: Any) -> RunOut:
         run_id=summary.run_id, kind=summary.kind, status=summary.status, created_at=summary.created_at,
         finished_at=summary.finished_at, scope_revision_id=summary.scope_revision_id,
         requested_by=None if summary.requested_by is None else str(summary.requested_by),
-        reason=summary.reason or "", job_counts={str(_value(k)): v for k, v in dict(summary.job_counts).items()},
+        reason=summary.reason or "", targets=list(getattr(summary, "targets", ()) or ()), job_counts={str(_value(k)): v for k, v in dict(summary.job_counts).items()},
         phases=[PhaseStateOut(phase=str(_value(p.phase)), target=p.target, status=str(_value(p.status)),
                               comparison=str(_value(p.comparison))) for p in summary.phases],
         last_error=summary.last_error,
@@ -476,8 +482,16 @@ def snapshot_out(snapshot: PhaseSnapshot) -> SnapshotOut:
 
 
 def run_detail_out(detail: Any) -> RunDetailOut:
-    return RunDetailOut(run=run_out(detail.summary), jobs=[job_out(job) for job in detail.jobs],
-                        snapshots=[snapshot_out(snapshot) for snapshot in detail.snapshots])
+    snapshots = [snapshot_out(snapshot) for snapshot in detail.snapshots]
+    not_run: dict[str, str] = {}
+    retest_outcome = None
+    for snapshot in snapshots:
+        if snapshot.phase == "checks":
+            not_run.update({str(k): str(v) for k, v in dict(snapshot.stats.get("not_run") or {}).items()})
+            if "fingerprint" in snapshot.stats:
+                retest_outcome = str(snapshot.stats.get("outcome"))
+    return RunDetailOut(run=run_out(detail.summary), jobs=[job_out(job) for job in detail.jobs], snapshots=snapshots,
+                        checks_not_run=not_run, retest_outcome=retest_outcome)
 
 
 def alert_out(notification: Notification) -> AlertOut:
