@@ -103,6 +103,8 @@ class RepeatedRunTests(unittest.TestCase):
             InventoryService(self.uow, policy=self.policy, job_id=job).record_discovery(
                 DiscoveredName("www.example.com", "subfinder", "example.com", observed_at=moment))
         self.assertEqual(len(self.uow.observations.rows), 1)
+        provenance = InventoryService(self.uow).get("www.example.com").attributes["provenance"]["subfinder"]
+        self.assertEqual(provenance["times_seen"], 1)
 
 
 class IdentityTests(unittest.TestCase):

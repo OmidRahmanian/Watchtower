@@ -120,7 +120,8 @@ class StepClock:
 
 
 class MemoryAssets:
-    """AssetRepository semantics: identity is (kind, value); attributes merge by top-level key."""
+    """AssetRepository semantics: identity is (kind, value); attributes merge by top-level key;
+    first/last seen widen to cover every seen_at."""
 
     def __init__(self, project_id):
         self.project_id = project_id
@@ -137,6 +138,7 @@ class MemoryAssets:
             return asset, True
         asset = replace(
             existing,
+            first_seen_at=min(existing.first_seen_at, seen_at),
             last_seen_at=max(existing.last_seen_at, seen_at),
             attributes={**existing.attributes, **(attributes or {})},
             scope_revision_id=scope_revision_id or existing.scope_revision_id,

@@ -59,7 +59,14 @@ def system_resolve(host: str, port: int) -> list[str]:
     return list(dict.fromkeys(info[4][0] for info in infos))
 
 
-class _PinnedHTTPConnection(http.client.HTTPConnection):
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP connection for `host` that only ever opens a socket to `ip:port`.
+
+    The hostname is used for the Host header only; it is never resolved, so a
+    DNS answer that changes after `check_connection` approved `ip` cannot
+    redirect the connection (no rebinding window). Proxies are not used.
+    """
+
     def __init__(self, host: str, ip: str, port: int, timeout: float) -> None:
         super().__init__(host, port, timeout=timeout)
         self._ip = ip
@@ -68,7 +75,14 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         self.sock = socket.create_connection((self._ip, self.port), self.timeout)
 
 
-class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection for `host` that only ever opens a socket to `ip:port`.
+
+    `host` is used for SNI, certificate hostname checks and the Host header,
+    and is never resolved, so the connection cannot be rebound to another
+    address after `check_connection` approved `ip`. Proxies are not used.
+    """
+
     def __init__(self, host: str, ip: str, port: int, timeout: float, context: ssl.SSLContext) -> None:
         super().__init__(host, port, timeout=timeout, context=context)
         self._ip = ip
@@ -234,9 +248,9 @@ class HttpProber:
 
     def _request(self, host: str, ip: str, port: int, path: str, context: ssl.SSLContext | None) -> dict[str, Any]:
         if context is None:
-            connection: http.client.HTTPConnection = _PinnedHTTPConnection(host, ip, port, self.timeout)
+            connection: http.client.HTTPConnection = PinnedHTTPConnection(host, ip, port, self.timeout)
         else:
-            connection = _PinnedHTTPSConnection(host, ip, port, self.timeout, context)
+            connection = PinnedHTTPSConnection(host, ip, port, self.timeout, context)
         deadline = time.monotonic() + self.timeout * 3
         try:
             connection.request("GET", path, headers={"User-Agent": USER_AGENT, "Accept": "*/*", "Connection": "close"})

@@ -3,7 +3,9 @@
 Assets are identified by their canonical hostname (`AssetKind.HOSTNAME`), so
 repeated discoveries, DNS answers and HTTP results attach to the same asset.
 Per-source provenance, ownership confidence and the latest authorization
-snapshot live in asset attributes. Every sighting, DNS answer and HTTP or
+snapshot live in asset attributes. The repository widens first/last seen to
+cover every `seen_at` it is given, so historical imports move `first_seen_at`
+back and only successful sightings move `last_seen_at` forward. Every sighting, DNS answer and HTTP or
 TLS result is appended as an observation. Nothing here deletes an asset, and a
 failed lookup or probe never clears what is already known.
 """
@@ -75,9 +77,18 @@ class IngestStats:
     errors: list[str] = field(default_factory=list)
 
 
-def _merge_provenance(previous: Mapping[str, Any] | None, seen: str, confidence: float, detail: Mapping[str, Any]) -> dict[str, Any]:
+def _merge_provenance(
+    previous: Mapping[str, Any] | None, seen: str, confidence: float, detail: Mapping[str, Any], job_id: UUID | None,
+) -> dict[str, Any]:
+    """Fold one sighting into a source's provenance.
+
+    `times_seen` counts sightings, except that repeats within one job (a retry,
+    or a duplicate row) count once.
+    """
+    job = str(job_id) if job_id else None
     if not previous:
-        return {"first_seen": seen, "last_seen": seen, "times_seen": 1, "confidence": confidence, "detail": dict(detail)}
+        return {"first_seen": seen, "last_seen": seen, "times_seen": 1, "confidence": confidence,
+                "detail": dict(detail), "last_job_id": job}
     merged_detail = dict(previous.get("detail", {}))
     for key, value in detail.items():
         earlier = merged_detail.get(key)
@@ -87,9 +98,10 @@ def _merge_provenance(previous: Mapping[str, Any] | None, seen: str, confidence:
     return {
         "first_seen": min(previous["first_seen"], seen),
         "last_seen": max(previous["last_seen"], seen),
-        "times_seen": previous.get("times_seen", 0) + 1,
+        "times_seen": previous.get("times_seen", 0) + (0 if job and previous.get("last_job_id") == job else 1),
         "confidence": max(previous.get("confidence", 0.0), confidence),
         "detail": merged_detail,
+        "last_job_id": job,
     }
 
 
@@ -169,7 +181,7 @@ class InventoryService:
         existing = self.uow.assets.find(AssetKind.HOSTNAME, hostname)
         attributes = dict(existing.attributes) if existing else {}
         provenance = dict(attributes.get("provenance", {}))
-        provenance[name.source] = _merge_provenance(provenance.get(name.source), seen, confidence, name.detail)
+        provenance[name.source] = _merge_provenance(provenance.get(name.source), seen, confidence, name.detail, self.job_id)
         known_root = attributes.get("root_domain")
         if known_root and len(known_root) < len(root):
             root = known_root
@@ -177,7 +189,7 @@ class InventoryService:
         asset, created = self.uow.assets.upsert(
             AssetKind.HOSTNAME,
             hostname,
-            seen_at=max(observed_at, existing.last_seen_at) if existing else observed_at,
+            seen_at=observed_at,
             attributes={
                 "root_domain": root,
                 "provenance": provenance,
@@ -234,7 +246,7 @@ class InventoryService:
         asset, _ = self.uow.assets.upsert(
             AssetKind.HOSTNAME,
             hostname,
-            seen_at=max(observed_at, asset.last_seen_at) if resolved else asset.last_seen_at,
+            seen_at=observed_at if resolved else asset.last_seen_at,
             attributes=attributes,
             scope_revision_id=self.scope_revision_id,
         )
@@ -275,7 +287,7 @@ class InventoryService:
         asset, _ = self.uow.assets.upsert(
             AssetKind.HOSTNAME,
             asset.value,
-            seen_at=max(observed_at, asset.last_seen_at) if ok else asset.last_seen_at,
+            seen_at=observed_at if ok else asset.last_seen_at,
             attributes={"last_http": {**summary, "observed_at": isoformat(observed_at)}},
             scope_revision_id=self.scope_revision_id,
         )

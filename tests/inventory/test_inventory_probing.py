@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from inventory_support import FakeScope, MemoryUnitOfWork, StepClock, deny_all_policy, scope_policy
-from watchtower.adapters.probing import DISABLED_ADAPTERS
+from watchtower.adapters.probing import DISABLED_ADAPTERS, PinnedHTTPConnection
 from watchtower.adapters.probing.http import HttpProber
 from watchtower.domain.models import ObservationKind
 from watchtower.services.inventory import DiscoveredName, InventoryService
@@ -199,6 +199,25 @@ class ProbeTests(unittest.TestCase):
     def test_unresolvable_host_is_an_error_observation(self):
         result = self.prober(FakeScope(), resolve=self.resolver({"www.example.com": []})).probe("www.example.com", scheme="http")
         self.assertEqual((result["outcome"], result["error"]["kind"]), ("error", "dns_error"))
+
+    def test_pinned_connection_never_resolves_its_hostname(self):
+        server = self.serve({"/": (200, {}, b"pinned")})
+        real_getaddrinfo = socket.getaddrinfo
+
+        def literal_only(host, *args, **kwargs):
+            # create_connection passes the IP literal through getaddrinfo; any name means a DNS lookup.
+            if host != LOCAL:
+                raise AssertionError(f"{host} was resolved")
+            return real_getaddrinfo(host, *args, **kwargs)
+
+        with patch("socket.getaddrinfo", literal_only):
+            connection = PinnedHTTPConnection("unresolvable.invalid", LOCAL, server.port, timeout=3.0)
+            try:
+                connection.request("GET", "/")
+                self.assertEqual(connection.getresponse().read(), b"pinned")
+            finally:
+                connection.close()
+        self.assertEqual(server.requests, [(f"unresolvable.invalid:{server.port}", "/")])
 
     def test_httpx_cli_adapter_stays_disabled(self):
         self.assertIn("httpx-cli", DISABLED_ADAPTERS)
