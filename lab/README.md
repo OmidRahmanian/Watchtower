@@ -36,7 +36,7 @@ Change the dashboard port with `LAB_DASHBOARD_PORT=18080 lab/lab.sh up`. Set the
 | Change | `lab/lab.sh change` | `www` gets a new title and starts serving `/.env`. `shop.acme-lab.test` appears and serves `/.git/config`. |
 | Alert | `lab/lab.sh scan "after change"` | The run follows to completion and prints `ALERT monitor.changes` with `asset.discovered shop.acme-lab.test`, `http.changed … title`, and a `finding.opened` line for each exposure. `lab/lab.sh alerts` lists them again. |
 | Inspect | `lab/lab.sh findings`, then `lab/lab.sh finding <id>` | The finding's check, endpoint, history and evidence. `.env` values are redacted in the evidence. The dashboard shows the same, with evidence download. |
-| Failed scan | `lab/lab.sh outage`, `lab/lab.sh scan`, `lab/lab.sh restore` | With the targets down, DNS and HTTP read `uncertain` (red) and nothing changes state. A scan that could not see the targets never resolves or closes anything. |
+| Failed scan | `lab/lab.sh outage`, `lab/lab.sh scan`, `lab/lab.sh restore` | With all targets unreachable, the run reads `FAILED` and a `monitor.run_failed` alert identifies failed phases. Existing findings stay open; failure never proves removal or remediation. |
 | Fix | `lab/lab.sh fix` | Removes `/.env` and `/.git/config`. |
 | Retest | `lab/lab.sh retest <id>` or `lab/lab.sh retest-open` | Each finding's own check runs again against its own endpoint. A conclusive negative marks it `resolved` and prints `FIXED (verified by retest)`. A retest that fails or is inconclusive prints `RETEST FAILED - not verified`, and the finding stays open. |
 

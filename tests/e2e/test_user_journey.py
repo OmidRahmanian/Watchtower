@@ -175,6 +175,20 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     assert "monitor.run_failed" in {a["event_type"] for a in j.api("GET", "/alerts", viewer).json()["items"]}
     assert j.api("GET", f"/findings/{finding['id']}", viewer).json()["status"] == "open"
 
+    # A reachable worker whose probes all time out must expose the same
+    # failed-run contract through the API, without resolving the finding.
+    previous_http = dict(j.lab.http)
+    j.lab.http = {key: "timeout" for key in previous_http}
+    unreachable = j.api("POST", "/runs", operator, json={"reason": "all hosts unreachable"}).json()
+    j.work()
+    outage = j.api("GET", f"/runs/{unreachable['run_id']}", viewer).json()
+    assert outage["run"]["status"] == "failed", outage
+    assert j.api("GET", f"/findings/{finding['id']}", viewer).json()["status"] == "open"
+    outage_alerts = j.api("GET", "/alerts", viewer).json()["items"]
+    assert any(a["event_type"] == "monitor.run_failed" and a["payload"]["run_id"] == unreachable["run_id"]
+               for a in outage_alerts)
+    j.lab.http = previous_http
+
     # 6b. A retest that cannot reach the host proves nothing: the finding stays open.
     def refused(method, url, ip):
         raise ConnectionRefusedError("connection refused")
@@ -209,6 +223,7 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     # The history keeps the failed scan and failed retest apart from the verified fix.
     statuses = {run["run_id"]: run["status"] for run in runs}
     assert statuses[failed_scan["run_id"]] == "failed"
+    assert statuses[unreachable["run_id"]] == "failed"
     assert statuses[fix_run["run_id"]] == "succeeded"
     events = [e["event"] for e in fixed["history"]]
     assert events.index("retest_failed") < events.index("resolved")

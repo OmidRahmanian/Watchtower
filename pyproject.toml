@@ -26,17 +26,22 @@ api = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.30,<1",
 ]
+# Celery workers over RabbitMQ (watchtower.workers.celery_app).
+workers = ["celery>=5.4,<6"]
 dev = [
+    "celery>=5.4,<6",
     "fastapi>=0.115,<1",
     "httpx>=0.27,<1",
     "pymongo>=4.6,<5",
     "pytest>=8",
+    "pyyaml>=6",
     "uvicorn>=0.30,<1",
 ]
 
 [project.scripts]
 watchtower = "watchtower.cli:main"
 watchtower-db = "watchtower.persistence.cli:main"
+watchtower-worker = "watchtower.workers.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/watchtower"]
