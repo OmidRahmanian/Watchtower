@@ -99,11 +99,14 @@ SEVERITY_COLOURS = {"critical": "red", "high": "red", "medium": "yellow", "low":
 
 
 def table(out: TextIO, rows: Sequence[Sequence[str]], headers: Sequence[str]) -> None:
-    widths = [max(len(_strip(str(c))) for c in column) for column in zip(headers, *rows)] if rows else [
-        len(h) for h in headers]
-    print("  ".join(h.upper().ljust(w) for h, w in zip(headers, widths)), file=out)
+    """Left-aligned columns; widths ignore ANSI styling."""
+    widths = [len(header) for header in headers]
     for row in rows:
-        print("  ".join(str(c) + " " * (w - len(_strip(str(c)))) for c, w in zip(row, widths)).rstrip(), file=out)
+        widths = [max(width, len(_strip(str(cell)))) for width, cell in zip(widths, row, strict=True)]
+    print("  ".join(h.upper().ljust(w) for h, w in zip(headers, widths, strict=True)), file=out)
+    for row in rows:
+        cells = (str(c) + " " * (w - len(_strip(str(c)))) for c, w in zip(row, widths, strict=True))
+        print("  ".join(cells).rstrip(), file=out)
 
 
 def _strip(text: str) -> str:
@@ -855,7 +858,7 @@ def main(argv: Sequence[str] | None = None, *, out: TextIO | None = None, databa
               file=sys.stderr)
         return 3
     except tuple(e for e, _, _ in ERRORS) as error:  # type: ignore[misc]
-        code, label = next((c, l) for e, c, l in ERRORS if isinstance(error, e))
+        code, label = next((code, label) for kind, code, label in ERRORS if isinstance(error, kind))
         print(f"watchtower: {label}: {safe(error)}", file=sys.stderr)
         return code
     except (ValueError, OSError) as error:

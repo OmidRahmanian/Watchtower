@@ -1,6 +1,6 @@
 # HTTP API
 
-Base path: `/api/v1`. The interactive schema is served at `/api/v1/docs`, and the OpenAPI document at `/api/v1/openapi.json`.
+Base path: `/api/v1`. The OpenAPI document is at `/api/v1/openapi.json`. Load it into any OpenAPI viewer; the server does not host one, because viewers load third-party scripts.
 
 ## Authentication and authorization
 
@@ -91,6 +91,7 @@ Content-Disposition: attachment; filename="evidence-<id>.json"
 X-Content-Type-Options: nosniff
 Content-Security-Policy: default-src 'none'; sandbox
 Cache-Control: no-store
+X-WatchTower-SHA256: <digest of the stored bytes>
 ```
 
 A browser therefore saves the file instead of rendering it, even if captured content looks like HTML or script.

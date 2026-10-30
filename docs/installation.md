@@ -117,7 +117,7 @@ WATCHTOWER__NOTIFICATIONS__DESTINATIONS='[{"name": "ops", "kind": "discord", "ur
 watchtower serve            # http://127.0.0.1:8080, sign in with your token
 ```
 
-The server listens on loopback only unless you pass `--host` with `--allow-remote`. Put TLS in front of it before exposing it. The API is described in [api.md](api.md), and the interactive schema is at `/api/v1/docs`.
+The server listens on loopback only unless you pass `--host` with `--allow-remote`. Put TLS in front of it before exposing it. The API is described in [api.md](api.md), and its OpenAPI document is at `/api/v1/openapi.json`.
 
 ## Settings and profiles
 

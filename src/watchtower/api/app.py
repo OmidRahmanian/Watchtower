@@ -461,7 +461,7 @@ def download_evidence(project_id: UUID, evidence_id: UUID, ctx: Context, svc: Se
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "default-src 'none'; sandbox",
             "Cache-Control": "no-store",
-            "Digest": f"sha-256={evidence.sha256}",
+            "X-WatchTower-SHA256": evidence.sha256,
         },
     )
 
@@ -559,7 +559,9 @@ def create_app(
         title="WatchTower",
         version=watchtower.__version__,
         description="Authorized attack surface monitoring. Every project route needs a bearer API token.",
-        docs_url=API_PREFIX + "/docs",
+        # The interactive docs pages load third-party scripts; serving them on the
+        # dashboard's origin would undercut its CSP. The schema stays available.
+        docs_url=None,
         redoc_url=None,
         openapi_url=API_PREFIX + "/openapi.json",
     )

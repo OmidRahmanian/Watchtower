@@ -46,3 +46,8 @@ def test_dashboard_and_assets_are_served_with_security_headers(client):
     script = client.get("/static/app.js")
     assert script.status_code == 200 and script.headers["x-content-type-options"] == "nosniff"
     assert client.get("/static/../pyproject.toml").status_code == 404
+
+
+def test_no_third_party_docs_pages_on_the_dashboard_origin(client):
+    assert client.get("/api/v1/docs").status_code == 404
+    assert client.get("/api/v1/openapi.json").json()["info"]["title"] == "WatchTower"
