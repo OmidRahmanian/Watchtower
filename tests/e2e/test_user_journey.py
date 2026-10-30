@@ -146,7 +146,7 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     [alert] = j.api("GET", "/alerts", viewer).json()["items"]
     assert {"asset.discovered", "http.changed", "finding.opened"} <= j.change_types(alert)
     [delivered] = j.transport.delivered.values()
-    assert {c["type"] for c in delivered["changes"]} == j.change_types(alert)
+    assert {c["type"] for c in delivered["payload"]["changes"]} == j.change_types(alert)
 
     # 5. Inspect the finding and its evidence.
     [finding] = j.api("GET", "/findings", viewer).json()["items"]
