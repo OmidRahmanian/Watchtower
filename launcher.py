@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive target setup and discovery launcher; uses only the standard library."""
+"""Interactive setup for WatchTower: the platform or legacy discovery. Uses only the standard library."""
 
 import argparse
 from datetime import datetime
@@ -400,16 +400,148 @@ def wizard(root=ROOT, configure_only=False):
         return run_monitor(root, python, env, lock)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Configure a WatchTower target and start discovery interactively.")
-    parser.add_argument("--configure-only", action="store_true", help="Save the selected setup without starting services")
+# -- WatchTower platform -----------------------------------------------------
+#
+# The platform (PostgreSQL, published scope, runs, findings) is driven through
+# the `watchtower` CLI in a subprocess, so this launcher stays standard-library
+# only and every action goes through the same authentication and permission
+# checks as the API.
+
+PROFILES = {
+    "1": ("development", "Development: your own authorized targets"),
+    "2": ("lab", "Lab: the isolated demonstration network (lab/README.md)"),
+    "3": ("production", "Production"),
+}
+AUTHORIZATIONS = {
+    "1": ("asset_owner", "I own or administer these assets"),
+    "2": ("contract", "A signed testing contract or statement of work"),
+    "3": ("internal_approval", "Internal approval from the asset owner"),
+    "4": ("bug_bounty_program", "A bug bounty program that lists them in scope"),
+    "5": ("vulnerability_disclosure_program", "A vulnerability disclosure program that permits testing"),
+}
+DEFAULT_TOKEN_FILE = Path("~/.config/watchtower/token")
+
+
+def project_slug(value):
+    value = value.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", value):
+        raise ValueError("Use 2-63 lowercase letters, digits, or hyphens, such as acme-lab.")
+    return value
+
+
+def required_text(value):
+    value = value.strip()
+    if not value or any(ord(c) < 32 for c in value):
+        raise ValueError("This is required.")
+    return value
+
+
+def platform_cli(root, python, env, *args):
+    """Run one `watchtower` CLI command with live output; return its exit code."""
+    return subprocess.run([python, "-m", "watchtower.cli", *args], cwd=root, env=env).returncode
+
+
+def platform_ready(root, python, env):
+    result = subprocess.run(
+        [python, "-c", "import sys, watchtower.cli; sys.exit(sys.version_info < (3, 11))"],
+        cwd=root, env=env, capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"The WatchTower platform needs Python 3.11+ with the package installed. Run: {python} -m pip install -e '.[api]'"
+        )
+    if not env.get("WATCHTOWER__DATABASE__URL"):
+        raise RuntimeError("Set WATCHTOWER__DATABASE__URL in .env (see docs/installation.md), then try again.")
+
+
+def platform_wizard(root=ROOT):
+    banner()
+    say("\nPlatform setup")
+    say("Choose a project, publish the scope you are authorized to test, and monitor it.")
+    python = python_executable(root)
+    env = runtime_environment(root, python)
+    platform_ready(root, python, env)
+    profile = PROFILES[choose("Settings profile", {key: label for key, (_, label) in PROFILES.items()})][0]
+    slug = validated("Project (slug)", project_slug, env.get("WATCHTOWER_PROJECT", "acme-lab" if profile == "lab" else ""))
+    token_file = Path(env.get("WATCHTOWER_TOKEN_FILE", str(DEFAULT_TOKEN_FILE))).expanduser()
+    env = dict(env, WATCHTOWER_PROFILE=profile, WATCHTOWER_PROJECT=slug)
+    cli = ["--token-file", str(token_file)]
+
+    if not token_file.exists():
+        say(f"\nNo API token at {token_file}.")
+        if not yes_no(f"Create project {slug} (if needed) with you as owner, and save your token there?"):
+            say("Cancelled. Nothing was changed.")
+            return 0
+        owner = validated("Your name (recorded as the project owner)", required_text)
+        if platform_cli(root, python, env, "bootstrap", slug, "--owner", owner, "--save-token", str(token_file)):
+            raise RuntimeError("Could not create the project. Check the database settings and the output above.")
+    if platform_cli(root, python, env, *cli, "status"):
+        raise RuntimeError("Could not open the project with this token.")
+
+    target = choose("Target", {"1": "Authorize a domain", "2": "Keep the current scope"})
+    if target == "1":
+        domain = validated("Target domain (example.com)", domain_name, "acme-lab.test" if profile == "lab" else "")
+        excluded = validated(
+            "Excluded subdomains (comma-separated exact names; - for none)",
+            lambda value: exclusions(value or "-", domain),
+        )
+        say("\nScanning needs written authorization for every target. Record where it comes from.")
+        kind = AUTHORIZATIONS[choose("Authorization", {key: label for key, (_, label) in AUTHORIZATIONS.items()})][0]
+        reference = validated("Reference (program URL, contract or ticket id)", required_text)
+        granted_by = validated("Granted by (person or organization)", required_text)
+        say(f"\nScope: {domain} and *.{domain}" + (f", excluding {', '.join(excluded)}" if excluded else ""))
+        if not yes_no(f"Do you confirm that {granted_by} authorized you to test all of it?", default=False):
+            say("Cancelled. The scope was not changed.")
+            return 0
+        command = [*cli, "scope", "publish", "--include", domain, "--include", f"*.{domain}",
+                   "--authorization-kind", kind, "--reference", reference, "--granted-by", granted_by,
+                   "--i-am-authorized"]
+        for name in excluded:
+            command += ["--exclude", name]
+        if platform_cli(root, python, env, *command):
+            raise RuntimeError("The scope was not published. See the message above.")
+
+    action = choose("What next?", {
+        "1": "Start a run and watch it",
+        "2": "Watch for changes and alerts",
+        "3": "Open the dashboard (http://127.0.0.1:8080)",
+        "4": "Exit",
+    })
+    if action == "4":
+        return 0
+    if action == "3":
+        say("Sign in with the token in " + str(token_file) + ". Press Ctrl+C to stop the server.")
+        return platform_cli(root, python, env, *cli, "serve")
+    work = yes_no("Run the scan jobs in this terminal (no separate worker)?", default=profile != "production")
+    extra = ["--work"] if work else []
+    if action == "1":
+        return platform_cli(root, python, env, *cli, "run", "start", "--reason", "started from launcher",
+                            "--watch", *extra)
+    return platform_cli(root, python, env, *cli, "watch", *extra)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Configure a WatchTower target and start monitoring interactively.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--platform", action="store_true", help="Use the WatchTower platform (PostgreSQL, authorized scope)")
+    mode.add_argument("--legacy", action="store_true", help="Use legacy discovery (MongoDB and Subfinder)")
+    parser.add_argument("--configure-only", action="store_true", help="Save the legacy setup without starting services")
     parser.add_argument("--banner", action="store_true", help="Preview the WatchTower banner without changing configuration")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         if args.banner:
             banner()
             return 0
-        return wizard(configure_only=args.configure_only)
+        if args.platform:
+            return platform_wizard()
+        if args.legacy or args.configure_only:
+            return wizard(configure_only=args.configure_only)
+        if choose("How do you want to run WatchTower?", {
+            "1": "Platform: authorized scope, runs, findings and dashboard (PostgreSQL)",
+            "2": "Legacy discovery: Subfinder with MongoDB",
+        }) == "1":
+            return platform_wizard()
+        return wizard()
     except (KeyboardInterrupt, EOFError):
         say("\nWatchTower stopped.")
         return 0
