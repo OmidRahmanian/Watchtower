@@ -1,0 +1,17 @@
+{
+  "id": "directory-listing",
+  "version": "1.0.0",
+  "kind": "http",
+  "title": "Web server directory listing is enabled",
+  "description": "The web root returns an automatic directory index, exposing file names that were not meant to be linked.",
+  "severity": "low",
+  "confidence": "firm",
+  "request": {"method": "GET", "path": "/"},
+  "match": {
+    "status": [200],
+    "body_all": ["(?i)<title>\\s*Index of /"],
+    "body_any": ["(?i)Parent Directory</a>", "(?i)<a href=\"[^\"]+/\">", "(?i)\\[To Parent Directory\\]"]
+  },
+  "negative_status": [200, 301, 302, 303, 307, 308, 401, 403, 404],
+  "evidence": {"profile": "default"}
+}

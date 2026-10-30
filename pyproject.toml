@@ -34,6 +34,7 @@ packages = ["src/watchtower"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "migrations" = "watchtower/_migrations"
+"rules" = "watchtower/_rules"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,18 @@
+{
+  "id": "vulnerable-component",
+  "version": "1.0.0",
+  "kind": "component",
+  "title": "Disclosed component matches an advisory",
+  "description": "A software version disclosed by the source rule falls inside an advisory's affected range. Vendor-suffixed versions are reported as tentative because they may include backported fixes.",
+  "severity": "medium",
+  "confidence": "firm",
+  "source_rule": "server-version-disclosure",
+  "observation": "server",
+  "product_map": {
+    "apache": "apache:http_server",
+    "nginx": "f5:nginx",
+    "openssl": "openssl:openssl",
+    "microsoft-iis": "microsoft:iis",
+    "lighttpd": "lighttpd:lighttpd"
+  }
+}
