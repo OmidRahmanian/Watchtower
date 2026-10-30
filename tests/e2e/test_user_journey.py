@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,6 +56,7 @@ class Journey:
         monkeypatch.delenv("WATCHTOWER_TOKEN", raising=False)
         self.monkeypatch = monkeypatch
         self.fetch = self.lab.fetch
+        self.slug = f"example-{uuid4().hex[:8]}"
 
     # -- drivers ------------------------------------------------------------
 
@@ -66,11 +68,11 @@ class Journey:
         notifier = Notifier(self.database, self.settings, transport=self.transport, retry_backoff=lambda attempt: 0)
         return worker.run_until_idle() + notifier.run_until_idle()
 
-    def cli(self, *argv: str, token: str | None = None, project: str | None = None) -> tuple[int, str]:
+    def cli(self, *argv: str, token: str | None = None) -> tuple[int, str]:
         if token:
             self.monkeypatch.setenv("WATCHTOWER_TOKEN", token)
         out = io.StringIO()
-        prefix = ["--profile", "test", *(["--project", project] if project else [])]
+        prefix = ["--profile", "test", "--project", self.slug]
         code = cli.main([*prefix, *argv], out=out, database=self.database, runs=self.runs, work=self.work)
         return code, out.getvalue()
 
@@ -80,7 +82,7 @@ class Journey:
 
     def bootstrap(self) -> str:
         token_file = self.tmp_path / "owner-token"
-        code, out = self.cli("bootstrap", "example-co", "--owner", "Ada Owner", "--save-token", str(token_file))
+        code, out = self.cli("bootstrap", self.slug, "--owner", "Ada Owner", "--save-token", str(token_file))
         assert code == 0, out
         token = token_file.read_text().strip()
         [project] = self.client.get("/api/v1/projects", headers={"Authorization": f"Bearer {token}"}).json()
@@ -114,7 +116,7 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     scope = {"includes": ["example.com", "*.example.com"], "authorization": AUTHORIZATION, "attest_authorized": True}
     assert j.api("POST", "/scope", operator, json=scope).status_code == 403
     assert j.api("POST", "/scope", owner, json=scope).status_code == 201
-    code, out = j.cli("scope", "check", "shop.example.com", token=viewer, project="example-co")
+    code, out = j.cli("scope", "check", "shop.example.com", token=viewer)
     assert code == 0 and "allowed" in out
 
     # 2. Baseline: the first run records the current state and never alerts.
@@ -137,7 +139,7 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
 
     # 4. Receive the alert, by following the run from the terminal monitoring loop.
     code, out = j.cli("run", "start", "--reason", "after deploy", "--watch", "--work", "--interval", "0",
-                      token=operator, project="example-co")
+                      token=operator)
     assert code == 0, out
     assert "ALERT monitor.changes" in out
     assert "finding.opened [high] Git repository configuration is publicly readable on shop.example.com" in out
@@ -161,7 +163,7 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     assert download.headers["content-disposition"].startswith("attachment;")
     assert download.headers["x-content-type-options"] == "nosniff"
     assert json.loads(download.content)["check_id"] == "exposed-git-config"
-    code, out = j.cli("finding", "show", finding["id"][:8], token=viewer, project="example-co")
+    code, out = j.cli("finding", "show", finding["id"][:8], token=viewer)
     assert code == 0 and "exposed-git-config" in out and str(evidence["id"]) in out
 
     # 6a. A scan that fails is a failed run with its own alert, never a clean result.
@@ -191,7 +193,7 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     # 7. Fix it, and 8. retest from the terminal until the result is in.
     j.lab.exposed.discard("shop.example.com")
     code, out = j.cli("finding", "retest", finding["id"], "--reason", "removed .git from web root", "--watch",
-                      "--work", "--interval", "0", token=operator, project="example-co")
+                      "--work", "--interval", "0", token=operator)
     assert code == 0, out
     assert "FIXED (verified by retest)" in out
     fixed = j.api("GET", f"/findings/{finding['id']}", viewer).json()
@@ -211,7 +213,7 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     assert statuses[fix_run["run_id"]] == "succeeded"
     events = [e["event"] for e in fixed["history"]]
     assert events.index("retest_failed") < events.index("resolved")
-    code, out = j.cli("run", "list", token=viewer, project="example-co")
+    code, out = j.cli("run", "list", token=viewer)
     lines = {line.split()[0]: line for line in out.splitlines()[1:]}
     assert "FAILED" in lines[failed_scan["run_id"][:8]]
     assert "SUCCEEDED" in lines[fix_run["run_id"][:8]]
@@ -225,7 +227,7 @@ def test_shipped_rules_pending_approval_never_run_or_resolve(database, tmp_path,
     assert j.api("POST", "/scope", owner, json=scope).status_code == 201
     j.lab.exposed.add("shop.example.com")
 
-    code, out = j.cli("run", "start", "--watch", "--work", "--interval", "0", token=owner, project="example-co")
+    code, out = j.cli("run", "start", "--watch", "--work", "--interval", "0", token=owner)
     assert code == 0, out
     [run] = j.api("GET", "/runs", owner).json()["items"]
     assert run["status"] == "partial"  # incomplete coverage, never "succeeded"
@@ -236,5 +238,5 @@ def test_shipped_rules_pending_approval_never_run_or_resolve(database, tmp_path,
     assert j.api("GET", "/findings", owner, params={"status": ["open", "resolved"]}).json()["items"] == []
     overview = j.api("GET", "/overview", owner).json()
     assert not any(rule["approved"] for rule in overview["rules"])
-    code, out = j.cli("run", "show", run["run_id"], token=owner, project="example-co")
+    code, out = j.cli("run", "show", run["run_id"], token=owner)
     assert "PARTIAL" in out and "did not run" in out
