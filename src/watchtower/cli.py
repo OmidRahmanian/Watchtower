@@ -341,10 +341,16 @@ def cmd_scope_check(app: App, args: argparse.Namespace) -> int:
 # -- runs and monitoring --------------------------------------------------
 
 
+# Phase comparisons that mean the run could not see what it was asked to look at.
+COMPARISON_COLOURS = {"failed": "red", "uncertain": "red", "partial": "yellow", "changed": "cyan"}
+
+
 def _run_line(app: App, run: schemas.RunOut) -> list[str]:
-    phases = " ".join(f"{p.phase}:{p.comparison}" for p in run.phases[:4])
+    phases = " ".join(app.style(safe(f"{p.phase}:{p.comparison}"), COMPARISON_COLOURS[p.comparison])
+                      if p.comparison in COMPARISON_COLOURS else safe(f"{p.phase}:{p.comparison}")
+                      for p in run.phases[:4])
     return [str(run.run_id)[:8], run.kind, app.style(run.status.upper(), RUN_COLOURS.get(run.status, "bold")),
-            when(run.created_at), safe(phases) or "-", safe(run.last_error or "")]
+            when(run.created_at), phases or "-", safe(run.last_error or "")]
 
 
 def cmd_run_start(app: App, args: argparse.Namespace) -> int:
@@ -381,14 +387,17 @@ def cmd_run_show(app: App, args: argparse.Namespace) -> int:
         app.say("  " + app.style(f"error: {safe(run.last_error)}", "red"))
     if detail.retest_outcome:
         app.say(f"  retest outcome: {safe(detail.retest_outcome)}")
-    _say_not_run(app, detail)
     table(app.out, [[j.kind, app.style(j.status, RUN_COLOURS.get(j.status, "bold")), f"{j.attempts}/{j.max_attempts}",
                      safe((j.result or {}).get("outcome", "")), safe(j.last_error or "")] for j in detail.jobs],
           ["job", "status", "attempts", "outcome", "error"])
     for snapshot in detail.snapshots:
         changes = sum(len(v) if isinstance(v, list) else 1 for v in snapshot.changes.values())
-        app.say(f"  {snapshot.phase:<9} {safe(snapshot.target)}: {snapshot.status}, {snapshot.comparison}"
+        comparison = snapshot.comparison
+        if comparison in COMPARISON_COLOURS:
+            comparison = app.style(comparison, COMPARISON_COLOURS[comparison])
+        app.say(f"  {snapshot.phase:<9} {safe(snapshot.target)}: {snapshot.status}, {comparison}"
                 + (f", {changes} change(s)" if changes else ""))
+    _say_not_run(app, detail)
     return 0
 
 

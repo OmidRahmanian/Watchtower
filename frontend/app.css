@@ -130,6 +130,8 @@ tr.row-bad td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
 .badge.muted { color: var(--muted); background: var(--muted-bg); }
 
 .chip { display: inline-block; margin: 0 4px 2px 0; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem; }
+.chip.bad { color: var(--bad); border-color: var(--bad); }
+.chip.warn { color: var(--warn); border-color: var(--warn); }
 .mono, code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; overflow-wrap: anywhere; }
 .error { color: var(--bad); }
 .hint, .empty { color: var(--muted); }

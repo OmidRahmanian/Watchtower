@@ -53,6 +53,8 @@ const REMEDIATION = {
   still_present: ["Still present after retest", "bad"],
   not_retested: ["Not retested", "muted"],
 };
+// Comparisons that mean a phase could not see what it was asked to look at.
+const COMPARISON_KIND = { failed: "bad", uncertain: "bad", partial: "warn" };
 const SEVERITY = { critical: "bad", high: "bad", medium: "warn", low: "info", info: "muted" };
 
 function runBadge(status) {
@@ -201,7 +203,7 @@ function runRow(run) {
     el("td", {}, run.kind),
     el("td", {}, runBadge(run.status)),
     el("td", {}, when(run.created_at)),
-    el("td", {}, run.phases.map((p) => el("span", { class: "chip" }, `${p.phase}: ${p.comparison}`))),
+    el("td", {}, run.phases.map((p) => el("span", { class: `chip ${COMPARISON_KIND[p.comparison] || ""}` }, `${p.phase}: ${p.comparison}`))),
     el("td", { class: "error" }, run.last_error || ""));
 }
 
