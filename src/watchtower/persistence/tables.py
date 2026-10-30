@@ -47,6 +47,8 @@ PROJECT_SCOPED_TABLES = (
     "findings",
     "evidence",
     "notifications",
+    "run_cancellations",
+    "phase_snapshots",
 )
 
 
@@ -237,13 +239,37 @@ jobs = Table(
     _ts("finished_at", nullable=True),
     Column("result", JSONB, nullable=True),
     Column("last_error", Text, nullable=True),
+    Column("run_id", UUID(as_uuid=True), nullable=True),
+    _ts("cancel_requested_at", nullable=True),
+    Column("cancel_reason", Text, nullable=True),
+    Column("concurrency_key", Text, nullable=True),
     PrimaryKeyConstraint("id"),
     UniqueConstraint("project_id", "id"),
     UniqueConstraint("project_id", "idempotency_key"),
     _revision_fk(),
     CheckConstraint("status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')", name="status"),
     CheckConstraint("max_attempts > 0 AND attempts >= 0", name="attempts"),
+    CheckConstraint(
+        "(cancel_requested_at IS NULL AND cancel_reason IS NULL)"
+        " OR (cancel_requested_at IS NOT NULL AND cancel_reason IS NOT NULL AND length(trim(cancel_reason)) > 0)",
+        name="cancel_request",
+    ),
+    CheckConstraint("concurrency_key IS NULL OR length(concurrency_key) > 0", name="concurrency_key_present"),
     Index("ix_jobs_claimable", "priority", "run_after", postgresql_where=text("status IN ('queued', 'running')")),
+    Index(None, "project_id", "run_id"),
+    Index("ix_jobs_running_concurrency_key", "concurrency_key", postgresql_where=text("status = 'running'")),
+)
+
+# A run whose cancellation was requested; enqueueing more of its jobs is refused.
+run_cancellations = Table(
+    "run_cancellations",
+    metadata,
+    _project(),
+    Column("run_id", UUID(as_uuid=True), nullable=False),
+    Column("reason", Text, nullable=False),
+    _ts("requested_at", now=True),
+    PrimaryKeyConstraint("project_id", "run_id"),
+    CheckConstraint("length(trim(reason)) > 0", name="reason_present"),
 )
 
 observations = Table(
@@ -344,4 +370,38 @@ notifications = Table(
     CheckConstraint("status IN ('pending', 'sending', 'sent', 'failed')", name="status"),
     CheckConstraint("max_attempts > 0 AND attempts >= 0", name="attempts"),
     Index("ix_notifications_deliverable", "next_attempt_at", postgresql_where=text("status IN ('pending', 'sending')")),
+)
+
+phase_snapshots = Table(
+    "phase_snapshots",
+    metadata,
+    _id(),
+    _project(),
+    Column("run_id", UUID(as_uuid=True), nullable=False),
+    Column("job_id", UUID(as_uuid=True), nullable=True),
+    Column("target", Text, nullable=False),
+    Column("phase", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("comparison", Text, nullable=False),
+    Column("items", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("pending", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("changes", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("stats", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    _ts("created_at", now=True),
+    PrimaryKeyConstraint("id"),
+    UniqueConstraint("project_id", "id"),
+    UniqueConstraint("project_id", "run_id", "phase", "target"),
+    ForeignKeyConstraint(["project_id", "job_id"], ["jobs.project_id", "jobs.id"]),
+    CheckConstraint("length(target) > 0", name="target_present"),
+    CheckConstraint("phase IN ('discovery', 'dns', 'http', 'checks')", name="phase"),
+    CheckConstraint("status IN ('completed', 'partial', 'failed', 'cancelled')", name="status"),
+    CheckConstraint(
+        "comparison IN ('baseline', 'unchanged', 'changed', 'partial', 'failed', 'uncertain')", name="comparison"
+    ),
+    CheckConstraint(
+        "jsonb_typeof(items) = 'array' AND jsonb_typeof(pending) = 'array'"
+        " AND jsonb_typeof(changes) = 'object' AND jsonb_typeof(stats) = 'object'",
+        name="json_shapes",
+    ),
+    Index(None, "project_id", "target", "phase", "created_at"),
 )

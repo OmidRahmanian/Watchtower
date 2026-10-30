@@ -64,6 +64,45 @@ def test_bad_prohibited_network_rejected() -> None:
         load_settings(environ={"WATCHTOWER_PROFILE_DIR": str(PROFILES), "WATCHTOWER__SCOPE__EXTRA_PROHIBITED_NETWORKS": '["10.0.0.1/8"]'})
 
 
+def test_runtime_and_notification_settings() -> None:
+    env = {
+        "WATCHTOWER_PROFILE_DIR": str(PROFILES),
+        "WATCHTOWER__RUNTIME__BROKER_URL": "redis://:hunter2@broker:6379/0",
+        "WATCHTOWER__RUNTIME__LIMITS": '{"dns": 4, "http": 8}',
+        "WATCHTOWER__NOTIFICATIONS__DESTINATIONS": (
+            '[{"name": "discord", "kind": "discord", "url": "https://discord.com/api/webhooks/1/s3cret"},'
+            ' {"name": "ops", "kind": "webhook", "url": "https://ops.example/hook", "events": ["finding.opened"],'
+            ' "enabled": false}]'
+        ),
+    }
+    settings = load_settings("production", environ=env)
+    assert settings.runtime.limits == {"dns": 4, "http": 8}
+    assert settings.runtime.broker_url is not None and "hunter2" in settings.runtime.broker_url.get_secret_value()
+    assert settings.notifications.destination("discord").kind == "discord"  # type: ignore[union-attr]
+    assert settings.notifications.destination("ops") is None  # disabled
+    assert "hunter2" not in repr(settings) and "s3cret" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("WATCHTOWER__RUNTIME__LIMITS", '{"dns": -1}'),
+        ("WATCHTOWER__RUNTIME__LIMITS", '{"Bad Key": 1}'),
+        ("WATCHTOWER__RUNTIME__CONCURRENCY", "0"),
+        ("WATCHTOWER__RUNTIME__HEARTBEAT_SECONDS", "200"),
+        ("WATCHTOWER__NOTIFICATIONS__DESTINATIONS", '[{"name": "d", "kind": "discord", "url": "http://plain"}]'),
+        ("WATCHTOWER__NOTIFICATIONS__DESTINATIONS", '[{"name": "d", "kind": "pager", "url": "https://x"}]'),
+        (
+            "WATCHTOWER__NOTIFICATIONS__DESTINATIONS",
+            '[{"name": "d", "kind": "slack", "url": "https://a"}, {"name": "d", "kind": "slack", "url": "https://b"}]',
+        ),
+    ],
+)
+def test_bad_runtime_and_notification_settings_rejected(name: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        load_settings("production", environ={"WATCHTOWER_PROFILE_DIR": str(PROFILES), name: value})
+
+
 def test_tokens() -> None:
     token, prefix, digest = generate_token()
     assert parse_token(token) == prefix

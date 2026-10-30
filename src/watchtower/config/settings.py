@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -84,12 +85,76 @@ class AuthSettings(_Section):
     token_ttl_days: int | None = Field(default=90, ge=1)
 
 
+_KEY = r"^[a-z0-9][a-z0-9_.:-]{0,63}$"
+
+
+class RuntimeSettings(_Section):
+    """Workers and the job broker."""
+
+    broker_url: SecretStr | None = None
+    concurrency: int = Field(default=4, ge=1, le=256)  # jobs one worker process runs at once
+    lease_seconds: int = Field(default=300, ge=30, le=86_400)
+    heartbeat_seconds: int = Field(default=60, ge=5)
+    limits: dict[str, int] = Field(default_factory=dict)  # concurrency_key -> max running jobs
+
+    @field_validator("limits")
+    @classmethod
+    def _limits(cls, value: dict[str, int]) -> dict[str, int]:
+        for key, limit in value.items():
+            if not re.match(_KEY, key):
+                raise ValueError(f"invalid concurrency key: {key!r}")
+            if limit < 0:
+                raise ValueError(f"limit for {key!r} must be >= 0")
+        return value
+
+    @model_validator(mode="after")
+    def _heartbeat_within_lease(self) -> RuntimeSettings:
+        if self.heartbeat_seconds * 2 > self.lease_seconds:
+            raise ValueError("runtime.heartbeat_seconds must be at most half of runtime.lease_seconds")
+        return self
+
+
+class NotificationDestination(_Section):
+    """Where notifications for one channel go. The URL embeds a credential, so it is a secret."""
+
+    name: str = Field(pattern=_KEY)  # matched against NewNotification.channel
+    kind: Literal["discord", "slack", "telegram", "webhook"]
+    url: SecretStr
+    events: tuple[str, ...] = ()  # event types to deliver; empty delivers all
+    enabled: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def _https(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().startswith("https://"):
+            raise ValueError("notification URLs must use https://")
+        return value
+
+
+class NotificationSettings(_Section):
+    destinations: tuple[NotificationDestination, ...] = ()
+
+    @field_validator("destinations")
+    @classmethod
+    def _unique_names(cls, value: tuple[NotificationDestination, ...]) -> tuple[NotificationDestination, ...]:
+        names = [destination.name for destination in value]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate notification destinations: {', '.join(duplicates)}")
+        return value
+
+    def destination(self, name: str) -> NotificationDestination | None:
+        return next((d for d in self.destinations if d.name == name and d.enabled), None)
+
+
 class Settings(_Section):
     profile: str = "development"
     log_level: str = "INFO"
     database: DatabaseSettings = DatabaseSettings()
     scope: ScopeSettings = ScopeSettings()
     auth: AuthSettings = AuthSettings()
+    runtime: RuntimeSettings = RuntimeSettings()
+    notifications: NotificationSettings = NotificationSettings()
 
 
 def load_settings(profile: str | None = None, *, environ: Mapping[str, str] | None = None) -> Settings:
