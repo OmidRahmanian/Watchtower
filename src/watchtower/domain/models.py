@@ -14,6 +14,9 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from watchtower.domain.errors import InvalidTarget
+from watchtower.domain.targets import canonical_hostname, canonical_ip, canonical_port, parse_target, parse_url
+
 JSON = Mapping[str, Any]
 
 
@@ -35,6 +38,29 @@ class AssetKind(StrEnum):
     IP_ADDRESS = "ip_address"
     SERVICE = "service"  # value: "<host>:<port>/<tcp|udp>", host canonical, IPv6 bracketed
     URL = "url"  # value: canonical absolute http(s) URL
+
+
+def service_value(host: str, port: int | str, transport: str = "tcp") -> str:
+    """Canonical value for a ``SERVICE`` asset, e.g. ``api.example.com:443/tcp``."""
+    if transport not in {"tcp", "udp"}:
+        raise InvalidTarget(f"unsupported transport: {transport!r}")
+    return f"{parse_target(host).url_host}:{canonical_port(port)}/{transport}"
+
+
+def canonical_asset_value(kind: AssetKind, value: str) -> str:
+    """Canonicalize an asset value for ``kind``; raises ``InvalidTarget``."""
+    kind = AssetKind(kind)
+    if kind is AssetKind.HOSTNAME:
+        return canonical_hostname(value)
+    if kind is AssetKind.IP_ADDRESS:
+        return str(canonical_ip(value))
+    if kind is AssetKind.URL:
+        return parse_url(value).geturl()
+    host_port, slash, transport = value.rpartition("/")
+    host, colon, port = host_port.rpartition(":")
+    if not slash or not colon:
+        raise InvalidTarget(f"service must look like host:port/tcp, got {value!r}")
+    return service_value(host, port, transport)
 
 
 @dataclass(frozen=True, slots=True)
