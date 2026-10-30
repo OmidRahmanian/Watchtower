@@ -21,13 +21,18 @@ dependencies = [
 [project.optional-dependencies]
 # Only needed to import data from the legacy MongoDB deployment.
 legacy-import = ["pymongo>=4.6,<5"]
+# Celery workers over RabbitMQ (watchtower.workers.celery_app).
+workers = ["celery>=5.4,<6"]
 dev = [
+    "celery>=5.4,<6",
     "pymongo>=4.6,<5",
     "pytest>=8",
+    "pyyaml>=6",
 ]
 
 [project.scripts]
 watchtower-db = "watchtower.persistence.cli:main"
+watchtower-worker = "watchtower.workers.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/watchtower"]

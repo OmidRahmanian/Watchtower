@@ -115,20 +115,28 @@ class RuntimeSettings(_Section):
 
 
 class NotificationDestination(_Section):
-    """Where notifications for one channel go. The URL embeds a credential, so it is a secret."""
+    """Where notifications for one channel go. The URL embeds a credential, so it is a secret.
+
+    ``kind = "log"`` delivers nowhere: the notifier logs the alert and marks it
+    sent, so it stays in the outbox for the CLI and dashboard. It takes no URL.
+    """
 
     name: str = Field(pattern=_KEY)  # matched against NewNotification.channel
-    kind: Literal["discord", "slack", "telegram", "webhook"]
-    url: SecretStr
+    kind: Literal["discord", "slack", "telegram", "webhook", "log"]
+    url: SecretStr | None = None
     events: tuple[str, ...] = ()  # event types to deliver; empty delivers all
     enabled: bool = True
 
-    @field_validator("url")
-    @classmethod
-    def _https(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().startswith("https://"):
+    @model_validator(mode="after")
+    def _url_for_kind(self) -> NotificationDestination:
+        if self.kind == "log":
+            if self.url is not None:
+                raise ValueError("log destinations take no url")
+        elif self.url is None:
+            raise ValueError(f"{self.kind} destinations need a url")
+        elif not self.url.get_secret_value().startswith("https://"):
             raise ValueError("notification URLs must use https://")
-        return value
+        return self
 
 
 class NotificationSettings(_Section):
@@ -147,6 +155,32 @@ class NotificationSettings(_Section):
         return next((d for d in self.destinations if d.name == name and d.enabled), None)
 
 
+class PipelineSettings(_Section):
+    """What the monitoring pipeline runs; see ``watchtower.services.jobs``."""
+
+    discovery_sources: tuple[Literal["subfinder", "manual"], ...] = ("subfinder",)
+    seed_file: str = ""  # hostnames, one per line, or a CSV with a hostname column; used by "manual"
+    subfinder_binary: str = "subfinder"
+    dns_nameservers: tuple[str, ...] = ()  # empty uses the system resolver
+    http_schemes: tuple[Literal["https", "http"], ...] = ("https", "http")
+    evidence_root: str = "data/evidence"
+    # Consecutive runs a modified or removed value must be seen before it is accepted and alerted.
+    confirm_changes: dict[str, int] = Field(default_factory=lambda: {"dns": 2, "http": 2})
+
+    @model_validator(mode="after")
+    def _sources(self) -> PipelineSettings:
+        if not self.discovery_sources:
+            raise ValueError("pipeline.discovery_sources must name at least one source")
+        if "manual" in self.discovery_sources and not self.seed_file:
+            raise ValueError("pipeline.seed_file is required when discovery_sources includes manual")
+        if not self.http_schemes:
+            raise ValueError("pipeline.http_schemes must name at least one scheme")
+        for phase, count in self.confirm_changes.items():
+            if phase not in ("discovery", "dns", "http", "checks") or not 1 <= count <= 10:
+                raise ValueError(f"invalid pipeline.confirm_changes entry: {phase}={count}")
+        return self
+
+
 class Settings(_Section):
     profile: str = "development"
     log_level: str = "INFO"
@@ -155,6 +189,7 @@ class Settings(_Section):
     auth: AuthSettings = AuthSettings()
     runtime: RuntimeSettings = RuntimeSettings()
     notifications: NotificationSettings = NotificationSettings()
+    pipeline: PipelineSettings = PipelineSettings()
 
 
 def load_settings(profile: str | None = None, *, environ: Mapping[str, str] | None = None) -> Settings:
