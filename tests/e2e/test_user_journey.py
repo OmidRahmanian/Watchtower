@@ -140,7 +140,9 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
                       token=operator, project="example-co")
     assert code == 0, out
     assert "ALERT monitor.changes" in out
-    assert "finding.opened" in out and "asset.discovered api.example.com" in out
+    assert "finding.opened [high] Git repository configuration is publicly readable on shop.example.com" in out
+    assert "asset.discovered api.example.com" in out
+    assert "http.changed https://www.example.com title: 'Example' -> 'Example v2'" in out
     [alert] = j.api("GET", "/alerts", viewer).json()["items"]
     assert {"asset.discovered", "http.changed", "finding.opened"} <= j.change_types(alert)
     [delivered] = j.transport.delivered.values()

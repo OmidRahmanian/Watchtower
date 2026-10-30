@@ -260,12 +260,23 @@ views.runs = async (root) => {
 };
 
 function describeChange(change) {
-  const parts = [change.type || "change", change.target || ""];
-  if (change.key) parts.push(change.key);
-  if (change.before !== undefined || change.after !== undefined) {
-    parts.push(`${JSON.stringify(change.before ?? null)} -> ${JSON.stringify(change.after ?? null)}`);
+  const kind = change.type || "change";
+  const key = change.key || change.target || "";
+  const before = change.before;
+  const after = change.after;
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (kind.startsWith("finding.")) {
+    const f = isObject(after) ? after : isObject(before) ? before : {};
+    return `${kind} [${f.severity || "?"}] ${f.title || key} on ${f.host || "?"} (${f.check_id || "?"})`;
   }
-  return parts.join(" ");
+  if (kind.startsWith("asset.")) return `${kind} ${key}`;
+  const show = (value) => JSON.stringify(value === undefined ? null : value);
+  if (isObject(before) && isObject(after)) {
+    const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+    const diffs = names.filter((n) => show(before[n]) !== show(after[n])).map((n) => `${n}: ${show(before[n])} -> ${show(after[n])}`);
+    return `${kind} ${key} ${diffs.join("; ")}`;
+  }
+  return `${kind} ${key}: ${show(before)} -> ${show(after)}`;
 }
 
 views.alerts = async (root) => {

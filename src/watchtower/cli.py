@@ -437,12 +437,23 @@ def _worker(app: App) -> Callable[[], int]:
 
 
 def describe_change(change: dict[str, Any]) -> str:
-    kind = safe(change.get("type", "change"))
-    target = safe(change.get("target", ""))
+    """One readable line for an alert change: what changed, where, and from what to what."""
+    kind = str(change.get("type", "change"))
+    key = change.get("key") or change.get("target") or ""
     before, after = change.get("before"), change.get("after")
-    detail = f": {safe(before)} -> {safe(after)}" if before is not None or after is not None else ""
-    key = f" {safe(change['key'])}" if change.get("key") else ""
-    return f"{kind} {target}{key}{detail}"
+    if kind.startswith("finding."):
+        finding = after if isinstance(after, dict) else before if isinstance(before, dict) else {}
+        line = (f"{kind} [{finding.get('severity', '?')}] {finding.get('title', key)} on "
+                f"{finding.get('host', '?')} ({finding.get('check_id', '?')})")
+    elif kind.startswith("asset."):
+        line = f"{kind} {key}"
+    elif isinstance(before, dict) and isinstance(after, dict):
+        differences = [f"{name}: {before.get(name)!r} -> {after.get(name)!r}"
+                       for name in sorted(set(before) | set(after)) if before.get(name) != after.get(name)]
+        line = f"{kind} {key} " + "; ".join(differences)
+    else:
+        line = f"{kind} {key}: {before!r} -> {after!r}"
+    return safe(line)
 
 
 def monitor(app: App, ctx: ProjectContext, args: argparse.Namespace, *, follow: UUID | None = None) -> int:
@@ -459,6 +470,8 @@ def monitor(app: App, ctx: ProjectContext, args: argparse.Namespace, *, follow: 
             if step is not None:
                 step()
             for run in reversed([schemas.run_out(r) for r in app.runs.list_runs(ctx.project_id, actor=ctx, limit=10)]):
+                if follow is not None and run.run_id != follow:
+                    continue
                 if seen_status.get(run.run_id) != run.status:
                     seen_status[run.run_id] = run.status
                     line = _run_line(app, run)
