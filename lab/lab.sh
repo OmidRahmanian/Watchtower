@@ -11,7 +11,15 @@ ENV_FILE="$LAB/.env"
 TOKEN=/var/lib/watchtower/.config/watchtower/token
 OWNER=${LAB_OWNER:-Lab Owner}
 
-compose() { docker compose -f "$LAB/compose.yaml" --env-file "$ENV_FILE" "$@"; }
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE="docker-compose"
+else
+    echo "Install Docker with Compose, start Docker, and try again." >&2
+    exit 1
+fi
+compose() { $COMPOSE -f "$LAB/compose.yaml" --env-file "$ENV_FILE" "$@"; }
 # A TTY keeps colour in the CLI's output when you run the lab interactively.
 tty_flag() { if [ -t 1 ]; then echo ""; else echo "-T"; fi; }
 wt() { compose exec $(tty_flag) watchtower watchtower "$@"; }
