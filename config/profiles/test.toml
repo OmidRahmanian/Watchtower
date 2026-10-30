@@ -1,0 +1,10 @@
+# Automated tests. The suite reads WATCHTOWER_TEST_DATABASE_URL for PostgreSQL.
+log_level = "WARNING"
+
+[database]
+pool_size = 2
+statement_timeout_ms = 10000
+
+[scope]
+default_permitted_ports = "80,443"
+policy_cache_seconds = 0

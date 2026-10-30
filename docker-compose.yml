@@ -1,10 +1,12 @@
 version: '3.8'
 services:
+  # Legacy inventory store. It has no authentication, so it is published on
+  # the loopback interface only.
   mongodb:
     image: mongo
     restart: always
     ports:
-      - 27017:27017
+      - 127.0.0.1:27017:27017
     volumes:
       - ./data/db:/data/db
       - ./data/backup:/backup

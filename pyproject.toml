@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "watchtower"
+version = "0.2.0.dev0"
+description = "Authorized attack surface monitoring with PostgreSQL persistence and scope enforcement."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "alembic>=1.13,<2",
+    "dnspython>=2.6",
+    "idna>=3.7",
+    "psycopg[binary]>=3.2,<4",
+    "pydantic>=2.7,<3",
+    "SQLAlchemy>=2.0.30,<2.1",
+]
+
+[project.optional-dependencies]
+# Only needed to import data from the legacy MongoDB deployment.
+legacy-import = ["pymongo>=4.6,<5"]
+dev = [
+    "pymongo>=4.6,<5",
+    "pytest>=8",
+]
+
+[project.scripts]
+watchtower-db = "watchtower.persistence.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/watchtower"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "watchtower/_migrations"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "postgres: needs a PostgreSQL server (WATCHTOWER_TEST_DATABASE_URL)",
+]
