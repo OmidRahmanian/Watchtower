@@ -35,11 +35,12 @@ from watchtower.services.evidence import EvidenceStore
 FINGERPRINT_VERSION = "v1"
 RECENT_EVIDENCE = 5
 
-OPEN = {FindingStatus.OPEN, FindingStatus.TRIAGED}
+OPEN = {FindingStatus.OPEN, FindingStatus.TRIAGED, FindingStatus.IN_PROGRESS}
 # RESOLVED is reached only by a negative retest, and leaving it only by recurrence.
 MANUAL_TRANSITIONS = {
-    FindingStatus.OPEN: {FindingStatus.TRIAGED, FindingStatus.ACCEPTED_RISK, FindingStatus.FALSE_POSITIVE},
-    FindingStatus.TRIAGED: {FindingStatus.OPEN, FindingStatus.ACCEPTED_RISK, FindingStatus.FALSE_POSITIVE},
+    FindingStatus.OPEN: {FindingStatus.TRIAGED, FindingStatus.IN_PROGRESS, FindingStatus.ACCEPTED_RISK, FindingStatus.FALSE_POSITIVE},
+    FindingStatus.TRIAGED: {FindingStatus.OPEN, FindingStatus.IN_PROGRESS, FindingStatus.ACCEPTED_RISK, FindingStatus.FALSE_POSITIVE},
+    FindingStatus.IN_PROGRESS: {FindingStatus.OPEN, FindingStatus.TRIAGED, FindingStatus.ACCEPTED_RISK, FindingStatus.FALSE_POSITIVE},
     FindingStatus.ACCEPTED_RISK: {FindingStatus.TRIAGED},
     FindingStatus.FALSE_POSITIVE: {FindingStatus.TRIAGED},
     FindingStatus.RESOLVED: set(),
@@ -109,6 +110,11 @@ class FindingRecord:
     resolution_evidence: str | None = None
     retest_requested_at: datetime | None = None
     history: list[dict] = field(default_factory=list)
+    owner: str = ""
+    remediation_notes: str = ""
+    mitigation_notes: str = ""
+    risk_expires_at: datetime | None = None
+    priority_override: dict | None = None
 
     @property
     def is_open(self) -> bool:
@@ -155,6 +161,9 @@ class FindingRecord:
             recurrences=details["recurrences"], first_evidence=details["first_evidence"],
             recent_evidence=list(details["recent_evidence"]), resolution_evidence=details["resolution_evidence"],
             retest_requested_at=moment(details["retest_requested_at"]), history=list(details["history"]),
+            owner=details.get("owner", ""), remediation_notes=details.get("remediation_notes", ""),
+            mitigation_notes=details.get("mitigation_notes", ""), risk_expires_at=moment(details.get("risk_expires_at")),
+            priority_override=details.get("priority_override"),
         )
 
 
@@ -321,15 +330,49 @@ class FindingService:
         return finding
 
     def transition(self, key: str, status: FindingStatus, actor: str, reason: str = "",
-                   now: datetime | None = None) -> FindingRecord:
+                   now: datetime | None = None, risk_expires_at: datetime | None = None) -> FindingRecord:
         finding = self.get(key)
         status = FindingStatus(status)
         if status not in MANUAL_TRANSITIONS[finding.status]:
             raise FindingError(f"cannot move from {finding.status.value} to {status.value} manually")
         if status in NEEDS_REASON and not reason.strip():
             raise FindingError(f"{status.value} requires a reason")
+        moment = now or utcnow()
+        if risk_expires_at is not None and (risk_expires_at.utcoffset() is None or risk_expires_at <= moment
+                                            or status != FindingStatus.ACCEPTED_RISK):
+            raise FindingError("risk expiry must be a future timezone-aware date for accepted risk")
+        finding.risk_expires_at = risk_expires_at if status == FindingStatus.ACCEPTED_RISK else None
         self._set_status(finding, status, now or utcnow(), "status_changed", actor=actor, reason=reason)
         self.store.put(finding)
+        return finding
+
+    def annotate(self, key: str, actor: str, *, owner: str | None = None, remediation_notes: str | None = None,
+                 mitigation_notes: str | None = None, priority: str | None = None, reason: str = "") -> FindingRecord:
+        finding = self.get(key)
+        changes = {}
+        for name, value in (("owner", owner), ("remediation_notes", remediation_notes), ("mitigation_notes", mitigation_notes)):
+            if value is not None:
+                if len(value) > 4000:
+                    raise FindingError("annotation exceeds 4000 characters")
+                changes[name] = {"before": getattr(finding, name), "after": value.strip()}
+                setattr(finding, name, value.strip())
+        if priority is not None:
+            if priority not in ("P1", "P2", "P3", "P4", "clear") or not reason.strip():
+                raise FindingError("priority override requires P1-P4 (or clear) and a reason")
+            finding.priority_override = None if priority == "clear" else {"level": priority, "reason": reason, "actor": actor,
+                                                                         "at": utcnow().isoformat()}
+            changes["priority_override"] = finding.priority_override
+        self._event(finding, utcnow(), "annotated", actor=actor, changes=changes, reason=reason)
+        self.store.put(finding)
+        return finding
+
+    def expire_risk(self, key: str, now: datetime | None = None) -> FindingRecord:
+        finding = self.get(key)
+        now = now or utcnow()
+        if finding.status == FindingStatus.ACCEPTED_RISK and finding.risk_expires_at and finding.risk_expires_at <= now:
+            self._set_status(finding, FindingStatus.TRIAGED, now, "risk_acceptance_expired", actor="policy")
+            finding.risk_expires_at = None
+            self.store.put(finding)
         return finding
 
     def set_priority(self, key: str, priority: dict) -> FindingRecord:

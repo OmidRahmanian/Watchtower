@@ -88,6 +88,14 @@ class DnsCollector:
         """Resolve A, AAAA and CNAME. NXDOMAIN on any type ends the lookup."""
         result: dict[str, Any] = {"status": "no_answer", "a": [], "aaaa": [], "cname": [], "error": ""}
         for rdtype in RECORD_TYPES:
+            decision = self.guard.check_target(name, port=None)
+            if not decision:
+                return {**result, "status": "unauthorized", "error": explain(decision)}
+            permit = getattr(self.guard, "request_permit", None)
+            if permit is not None:
+                decision = permit(name)
+                if not decision:
+                    return {**result, "status": "unauthorized", "error": explain(decision)}
             try:
                 result[rdtype.lower()] = self.resolver.query(name, rdtype)
             except NXDomain:

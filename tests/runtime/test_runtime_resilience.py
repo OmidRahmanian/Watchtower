@@ -83,8 +83,7 @@ def test_a_worker_killed_mid_job_loses_nothing_and_duplicates_nothing(two_roots,
             "UPDATE jobs SET lease_expires_at = now() - interval '1 second' "
             "WHERE id = %s", (checks[0].id,))
     fetched_before = len(runs.lab.fetches)
-    runs.worker().run_until_idle()
-    runs.notifier().run_until_idle()
+    runs.finish(summary.run_id)
 
     detail = runs.service.get_run(project_id, summary.run_id, actor=runs.actor)
     assert detail.summary.status == "succeeded"

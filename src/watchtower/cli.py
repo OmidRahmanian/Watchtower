@@ -45,7 +45,7 @@ from watchtower.domain.errors import (
     WatchtowerError,
 )
 from watchtower.domain.models import FindingStatus, RunPhase
-from watchtower.domain.scope import AuthorizationKind, AuthorizationReference, RuleEffect, ScopeRule
+from watchtower.domain.scope import AuthorizationKind, AuthorizationReference, RuleEffect, ScopeRule, ScopeExecution
 from watchtower.persistence.database import Database
 from watchtower.security.auth import Permission, ProjectContext, ProjectRole
 from watchtower.services.evidence_store import BlobError, FilesystemBlobStore
@@ -118,7 +118,7 @@ def when(moment: datetime | str | None) -> str:
         return "-"
     if isinstance(moment, str):
         moment = datetime.fromisoformat(moment)
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def as_json(model: Any) -> str:
@@ -256,6 +256,25 @@ def _report_token(app: App, args: argparse.Namespace, token: str, who: str) -> N
 # -- projects and scope ---------------------------------------------------
 
 
+def cmd_projects(app: App, args: argparse.Namespace) -> int:
+    """List only projects accessible to this token, including its restriction."""
+    with app.database.system() as system:
+        principal, restricted = system.auth.authenticate(read_token(args))
+        projects = []
+        for project_id, role in system.auth.memberships(principal.id):
+            if restricted is not None and restricted != project_id:
+                continue
+            project = system.projects.get(project_id)
+            if project is not None:
+                projects.append(schemas.project_out(project, ProjectContext(project_id, principal, role)))
+    projects.sort(key=lambda p: p.slug)
+    if args.json:
+        app.say(json.dumps([p.model_dump(mode="json") for p in projects]))
+    else:
+        table(app.out, [[safe(p.slug), safe(p.name), p.role] for p in projects], ["project", "name", "role"])
+    return 0
+
+
 def cmd_status(app: App, args: argparse.Namespace) -> int:
     ctx = context(app, args)
     with app.database.project(ctx.project_id) as uow:
@@ -276,7 +295,7 @@ def cmd_status(app: App, args: argparse.Namespace) -> int:
         app.say(f"Scope: revision {current.number}, includes {includes}")
         app.say(f"  authorized by {safe(current.authorization.granted_by)} "
                 f"({current.authorization.kind.value}: {safe(current.authorization.reference)})")
-    open_count = counts["findings_by_status"]["open"] + counts["findings_by_status"]["triaged"]
+    open_count = sum(counts["findings_by_status"][s] for s in ("open", "triaged", "in_progress"))
     app.say(f"Assets: {sum(counts['assets'].values())}   Open findings: {open_count}   "
             f"Resolved: {counts['findings_by_status']['resolved']}")
     return 0
@@ -316,8 +335,13 @@ def cmd_scope_publish(app: App, args: argparse.Namespace) -> int:
         raise CliError("legacy_import is reserved for the MongoDB importer")
     revision = app.scope.publish(
         ctx.project_id, rules,
-        AuthorizationReference(kind=kind, reference=args.reference, granted_by=args.granted_by),
+        AuthorizationReference(kind=kind, reference=args.reference, granted_by=args.granted_by,
+                               valid_from=datetime.fromisoformat(args.valid_from) if args.valid_from else None,
+                               valid_until=datetime.fromisoformat(args.valid_until) if args.valid_until else None),
         actor=ctx, permitted_ports=args.ports, notes=args.notes or "",
+        execution_policy=ScopeExecution(allowed_paths=tuple(args.allow_path or ["/"]), excluded_paths=tuple(args.exclude_path or []),
+            allowed_schemes=tuple(args.allow_scheme or ["https", "http"]), allowed_check_kinds=tuple(args.check_kind or ["http", "component"]),
+            max_requests_per_run=args.max_requests),
     )
     app.say(f"Published scope revision {revision.number}: "
             + ", ".join(safe(r.pattern) for r in revision.includes)
@@ -335,7 +359,8 @@ def cmd_scope_revoke(app: App, args: argparse.Namespace) -> int:
 def cmd_scope_check(app: App, args: argparse.Namespace) -> int:
     ctx = context(app, args)
     ctx.require(Permission.VIEW)
-    decision = app.scope.authorize_target(ctx.project_id, args.target, port=args.port)
+    decision = (app.scope.authorize_url(ctx.project_id, args.target) if args.target.startswith(("http://", "https://"))
+                else app.scope.authorize_target(ctx.project_id, args.target, port=args.port))
     verdict = app.style("allowed", "green") if decision else app.style("denied", "red")
     app.say(f"{safe(args.target)}: {verdict} ({decision.reason.value}) {safe(decision.detail)}".rstrip())
     return 0 if decision else 3
@@ -359,9 +384,14 @@ def _run_line(app: App, run: schemas.RunOut) -> list[str]:
 def cmd_run_start(app: App, args: argparse.Namespace) -> int:
     ctx = context(app, args)
     phases = [RunPhase(p) for p in args.phase] if args.phase else None
+    options = {}
+    if args.idempotency_key:
+        options["idempotency_key"] = args.idempotency_key
+    if args.reuse_active:
+        options["reuse_active"] = True
     run = schemas.run_out(app.runs.start_run(ctx.project_id, actor=ctx, targets=args.target or None,
-                                             phases=phases, reason=args.reason or ""))
-    app.say(f"Queued run {run.run_id} ({run.kind}).")
+                                             phases=phases, reason=args.reason or "", **options))
+    app.say(as_json(run) if args.json else f"Queued run {run.run_id} ({run.kind}).")
     if args.watch:
         return monitor(app, ctx, args, follow=run.run_id)
     return 0
@@ -554,7 +584,7 @@ def cmd_findings(app: App, args: argparse.Namespace) -> int:
     ctx = context(app, args)
     ctx.require(Permission.VIEW)
     statuses = [FindingStatus(s) for s in args.status] if args.status else (
-        [] if args.all else [FindingStatus.OPEN, FindingStatus.TRIAGED])
+        [] if args.all else [FindingStatus.OPEN, FindingStatus.TRIAGED, FindingStatus.IN_PROGRESS])
     with app.database.project(ctx.project_id) as uow:
         findings = [schemas.finding_out(f) for f in queries.list_findings(uow, limit=args.limit, statuses=statuses)]
     if args.json:
@@ -608,7 +638,7 @@ def cmd_finding_triage(app: App, args: argparse.Namespace) -> int:
         store = RepositoryFindingStore(uow, row.scope_revision_id, asset_for=lambda _target: row.asset_id)
         record = FindingService(store).transition(row.fingerprint, FindingStatus(args.status),
                                                   f"{ctx.principal.display_name} <{ctx.principal.id}>",
-                                                  args.reason or "")
+                                                  args.reason or "", risk_expires_at=datetime.fromisoformat(args.risk_expires_at) if args.risk_expires_at else None)
     app.say(f"Finding {str(target.id)[:8]} is now {record.status.value}.")
     return 0
 
@@ -641,6 +671,9 @@ def cmd_evidence(app: App, args: argparse.Namespace) -> int:
         evidence = uow.evidence.get(UUID(args.evidence))
     if evidence is None or not evidence.storage_uri.startswith(f"fs:{ctx.project_id}/"):
         raise CliError("evidence not found")
+    from watchtower.services.maintenance import expired
+    if expired(evidence, app.settings):
+        raise CliError("evidence retention has expired; metadata remains in the finding history")
     try:
         data = _evidence_store(app).get(evidence.storage_uri)
     except BlobError:
@@ -681,6 +714,81 @@ def cmd_alerts(app: App, args: argparse.Namespace) -> int:
             app.say(f"  - {describe_change(change)}")
     if not alerts:
         app.say("No alerts yet.")
+    return 0
+
+
+def cmd_maintenance(app, args):
+    from watchtower.services.maintenance import maintain
+    ctx = context(app, args)
+    result = maintain(app.database, ctx.project_id, ctx, app.settings, _evidence_store(app), apply=args.apply)
+    app.say(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_settings(app, args):
+    from watchtower.services.public_settings import public_settings
+    ctx = context(app, args)
+    ctx.require(Permission.VIEW)
+    app.say(json.dumps(public_settings(app.settings, load_manifest), indent=2))
+    return 0
+
+
+def cmd_export(app, args):
+    from watchtower.services.reports import build_report
+    ctx = context(app, args)
+    body, _, headers = build_report(app.database, ctx.project_id, ctx, dataset=args.dataset, format=args.format,
+                                    limit=args.limit, cursor=args.cursor)
+    if args.output:
+        descriptor = os.open(Path(args.output).expanduser(), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(body)
+        app.say("Report saved privately. Next cursor: " + headers.get("X-Next-Cursor", "none"))
+    else:
+        app.say(body.decode())
+        if headers.get("X-Next-Cursor"):
+            print("Next cursor: " + headers["X-Next-Cursor"], file=sys.stderr)
+    return 0
+
+
+def cmd_intelligence(app, args):
+    from watchtower.services.intelligence import IntelligenceService
+    ctx = context(app, args)
+    ctx.require(Permission.VIEW)
+    service = IntelligenceService(app.settings)
+    if args.sub == "status":
+        result = service.status()
+    elif args.sub == "refresh":
+        ctx.require(Permission.MANAGE_PROJECT)
+        result = service.refresh(args.source, force=args.force)
+    else:
+        with app.database.project(ctx.project_id) as uow:
+            result = service.correlate(uow, limit=args.limit, after_value=args.after_asset)
+    app.say(json.dumps(result, default=str, indent=2))
+    return 0
+
+
+def cmd_annotate(app, args):
+    from watchtower.persistence.repositories.audit import record_audit
+    ctx = context(app, args)
+    ctx.require(Permission.OPERATE)
+    finding = _finding(app, ctx, args.finding)
+    with app.database.project(ctx.project_id) as uow:
+        stored = uow.findings.get(finding.id)
+        store = RepositoryFindingStore(uow, stored.scope_revision_id, asset_for=lambda _: stored.asset_id)
+        FindingService(store).annotate(stored.fingerprint, str(ctx.principal.id), owner=args.owner,
+            remediation_notes=args.remediation_notes, mitigation_notes=args.mitigation_notes, priority=args.priority, reason=args.reason or "")
+        record_audit(uow.connection, "finding.annotated", str(finding.id), project_id=ctx.project_id, actor=ctx.principal.id)
+    app.say(f"Updated finding {finding.id}.")
+    return 0
+
+
+def cmd_prioritize(app, args):
+    from watchtower.services.intelligence import IntelligenceService
+    ctx = context(app, args)
+    finding = _finding(app, ctx, args.finding)
+    with app.database.project(ctx.project_id) as uow:
+        result = IntelligenceService(app.settings).reprioritize(uow, ctx, finding.id)
+    app.say(json.dumps(result, indent=2))
     return 0
 
 
@@ -737,6 +845,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("revoke", cmd_token_revoke, "revoke a token by id", parent=token).add_argument("token_id")
 
     add("status", cmd_status, "project, scope and totals", json_output=True)
+    add("projects", cmd_projects, "projects accessible to the current token", json_output=True)
+    add("settings", cmd_settings, "effective settings without credentials", json_output=True)
 
     scope = commands.add_parser("scope", help="authorized scope").add_subparsers(dest="sub", required=True)
     add("show", cmd_scope_show, "scope revisions, newest first", json_output=True, parent=scope)
@@ -750,6 +860,13 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--reference", required=True, help="link or id of the program policy, contract or approval")
     publish.add_argument("--granted-by", required=True, help="who granted the authorization")
     publish.add_argument("--notes")
+    publish.add_argument("--valid-from", help="authorization begins, ISO 8601 with timezone")
+    publish.add_argument("--valid-until", help="authorization expires, ISO 8601 with timezone")
+    publish.add_argument("--allow-path", action="append", help="canonical path prefix; repeat for more (default /)")
+    publish.add_argument("--exclude-path", action="append", help="excluded path prefix, overriding allowed paths")
+    publish.add_argument("--allow-scheme", action="append", choices=["http", "https"])
+    publish.add_argument("--check-kind", action="append", choices=["http", "component"])
+    publish.add_argument("--max-requests", type=int, default=10000, help="cumulative request budget for a run under this revision")
     publish.add_argument("--i-am-authorized", action="store_true",
                          help="confirm that the authorization covers every included target")
     revoke = add("revoke", cmd_scope_revoke, "revoke a revision; scanning stops at once", parent=scope)
@@ -760,10 +877,12 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--port", type=int)
 
     run = commands.add_parser("run", help="monitoring runs").add_subparsers(dest="sub", required=True)
-    start = add("start", cmd_run_start, "queue a run pinned to the current scope", parent=run)
+    start = add("start", cmd_run_start, "queue a run pinned to the current scope", parent=run, json_output=True)
     start.add_argument("--target", action="append", help="root domain; default: every root in scope")
     start.add_argument("--phase", action="append", choices=[p.value for p in RunPhase])
     start.add_argument("--reason")
+    start.add_argument("--idempotency-key", help="reuse the same key when retrying a request")
+    start.add_argument("--reuse-active", action="store_true", help="reuse an equivalent active scan instead of overlapping it")
     _watch_options(start, follow_flag=True)
     run_list = add("list", cmd_run_list, "recent runs", json_output=True, parent=run)
     run_list.add_argument("--limit", type=int, default=20)
@@ -792,6 +911,15 @@ def build_parser() -> argparse.ArgumentParser:
     triage.add_argument("--status", required=True,
                         choices=[s.value for s in FindingStatus if s is not FindingStatus.RESOLVED])
     triage.add_argument("--reason")
+    triage.add_argument("--risk-expires-at", help="optional accepted-risk expiry, ISO 8601 with timezone")
+    annotate = add("annotate", cmd_annotate, "assign an owner, record remediation/mitigation, or override priority", parent=finding)
+    annotate.add_argument("finding")
+    annotate.add_argument("--owner")
+    annotate.add_argument("--remediation-notes")
+    annotate.add_argument("--mitigation-notes")
+    annotate.add_argument("--priority", choices=["P1", "P2", "P3", "P4", "clear"])
+    annotate.add_argument("--reason")
+    add("prioritize", cmd_prioritize, "recompute explainable priority from cached intelligence", parent=finding).add_argument("finding")
     retest = add("retest", cmd_finding_retest, "queue a retest of this finding", parent=finding)
     retest.add_argument("finding")
     retest.add_argument("--reason")
@@ -803,6 +931,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     alerts = add("alerts", cmd_alerts, "notification outbox, newest first", json_output=True)
     alerts.add_argument("--limit", type=int, default=20)
+    maintenance = add("maintenance", cmd_maintenance, "preview expired evidence and risk exceptions; --apply changes them")
+    maintenance.add_argument("--apply", action="store_true")
+
+    export = add("export", cmd_export, "export one authorized inventory/findings page as JSON or CSV")
+    export.add_argument("--dataset", choices=["assets", "findings"], default="assets")
+    export.add_argument("--format", choices=["json", "csv"], default="json")
+    export.add_argument("--limit", type=int, choices=range(1, 201), default=100, metavar="1-200")
+    export.add_argument("--cursor")
+    export.add_argument("--output", help="new private output file; existing files are never overwritten")
+    intel = commands.add_parser("intelligence", help="cached feeds and applicability review").add_subparsers(dest="sub", required=True)
+    add("status", cmd_intelligence, "feed freshness and last successful refresh", parent=intel)
+    refresh = add("refresh", cmd_intelligence, "refresh one configured feed (needs owner)", parent=intel)
+    refresh.add_argument("source", choices=["kev", "epss", "advisories"])
+    refresh.add_argument("--force", action="store_true", help="bypass refresh interval, retaining a minimum 60-second request interval")
+    correlate = add("correlate", cmd_intelligence, "review potentially relevant advisories; sends no target traffic", parent=intel)
+    correlate.add_argument("--limit", type=int, choices=range(1, 201), default=50, metavar="1-200")
+    correlate.add_argument("--after-asset")
 
     serve = add("serve", cmd_serve, "run the API and dashboard")
     serve.add_argument("--host", default="127.0.0.1")

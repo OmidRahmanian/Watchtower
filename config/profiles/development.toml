@@ -7,7 +7,7 @@ pool_size = 5
 
 [scope]
 default_permitted_ports = "80,443"
-max_redirects = 5
+max_redirects = 0
 allow_private_networks = false
 
 [runtime]

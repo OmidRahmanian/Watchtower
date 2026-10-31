@@ -10,7 +10,7 @@ const TOKEN_KEY = "watchtower.token";
 const PROJECT_KEY = "watchtower.project";
 const REFRESH_MS = 10000;
 
-const state = { token: null, projects: [], project: null, view: "overview", timer: null, cursor: {} };
+const state = { token: null, projects: [], project: null, view: "overview", timer: null, cursor: {}, filters: {}, scanKey: null };
 
 // ---- small DOM helpers -------------------------------------------------
 
@@ -36,7 +36,7 @@ function text(value) {
 function when(iso) {
   if (!iso) return "-";
   const moment = new Date(iso);
-  return isNaN(moment) ? String(iso) : moment.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+  return isNaN(moment) ? String(iso) : moment.toLocaleString(undefined, { timeZoneName: "short" });
 }
 
 function badge(label, kind) {
@@ -210,7 +210,7 @@ function runRow(run) {
 views.overview = async (root) => {
   const data = await api(projectPath("/overview"));
   const counts = data.counts;
-  const open = counts.findings_by_status.open + counts.findings_by_status.triaged;
+  const open = counts.findings_by_status.open + counts.findings_by_status.triaged + (counts.findings_by_status.in_progress || 0);
   const pending = data.rules.filter((r) => !r.approved);
   root.replaceChildren(
     heading(data.project.name),
@@ -250,7 +250,10 @@ views.runs = async (root) => {
     ? el("button", {
       onclick: async () => {
         try {
-          const run = await api(projectPath("/runs"), { method: "POST", body: { reason: "started from dashboard" } });
+          state.scanKey = state.scanKey || crypto.randomUUID();
+          const run = await api(projectPath("/runs"), { method: "POST", body: { reason: "started from dashboard",
+            idempotency_key: state.scanKey, reuse_active: true } });
+          state.scanKey = null;
           notice(`Queued run ${run.run_id.slice(0, 8)}.`, "ok");
           show("runs");
         } catch (error) { notice(error.message, "bad"); }
@@ -292,30 +295,61 @@ views.alerts = async (root) => {
     : el("p", { class: "empty" }, "No alerts yet."));
 };
 
-async function paged(root, title, path, render, headers, empty) {
+async function paged(root, title, path, render, headers, empty, controls = null) {
   const key = `${state.project.id}:${path}`;
   const cursors = state.cursor[key] || (state.cursor[key] = [null]);
   const cursor = cursors[cursors.length - 1];
   const separator = path.includes("?") ? "&" : "?";
   const page = await api(projectPath(path + separator + "limit=50" + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "")));
-  const prev = el("button", { disabled: cursors.length < 2, onclick: () => { cursors.pop(); paged(root, title, path, render, headers, empty); } }, "Previous");
-  const next = el("button", { disabled: !page.next_cursor, onclick: () => { cursors.push(page.next_cursor); paged(root, title, path, render, headers, empty); } }, "Next");
-  root.replaceChildren(heading(title), tableOf(headers, page.items.map(render), empty), el("div", { class: "pager" }, prev, next));
+  const prev = el("button", { disabled: cursors.length < 2, onclick: () => { cursors.pop(); paged(root, title, path, render, headers, empty, controls); } }, "Previous");
+  const next = el("button", { disabled: !page.next_cursor, onclick: () => { cursors.push(page.next_cursor); paged(root, title, path, render, headers, empty, controls); } }, "Next");
+  root.replaceChildren(heading(title), ...(controls ? [controls] : []), tableOf(headers, page.items.map(render), empty), el("div", { class: "pager" }, prev, next));
 }
 
-views.assets = (root) => paged(root, "Inventory", "/assets", (asset) => {
+function filtersFor(view, fields) {
+  const key = `${state.project.id}:${view}`;
+  const values = state.filters[key] || (state.filters[key] = {});
+  const inputs = fields.map((name) => el("input", { name, placeholder: name, "aria-label": name, value: values[name] || "" }));
+  const form = el("form", { class: "actions", onsubmit: (event) => {
+    event.preventDefault();
+    for (const input of inputs) values[input.name] = input.value.trim();
+    show(view);
+  } }, ...inputs, el("button", { type: "submit" }, "Filter"));
+  const query = new URLSearchParams(Object.entries(values).filter(([, value]) => value));
+  return { form, query: query.toString() };
+}
+
+async function exportReport(dataset, format) {
+  try {
+    const response = await api(projectPath(`/exports?dataset=${dataset}&format=${format}&limit=200`), { raw: true });
+    const url = URL.createObjectURL(new Blob([await response.arrayBuffer()], { type: "application/octet-stream" }));
+    const link = el("a", { href: url, download: `watchtower-${dataset}.${format}` });
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    notice(response.headers.get("X-Next-Cursor") ? "Exported the first 200 records. Use paginated API/CLI exports for the remainder." : "Export downloaded.", "info");
+  } catch (error) { notice(error.message, "bad"); }
+}
+
+views.assets = (root) => {
+  const filters = filtersFor("assets", ["search", "owner", "tag", "technology"]);
+  filters.form.append(el("button", { type: "button", onclick: () => exportReport("assets", "csv") }, "Export inventory CSV (up to 200)"));
+  return paged(root, "Inventory", "/assets?" + filters.query, (asset) => {
   const http = asset.last_http || {};
   return el("tr", {},
-    el("td", { class: "mono" }, asset.value),
+    el("td", { class: "mono" }, el("button", { onclick: () => show("asset", asset.id) }, asset.value)),
     el("td", {}, asset.kind),
     el("td", {}, badge(asset.authorization, asset.authorization === "authorized" ? "ok" : "warn")),
     el("td", { class: "mono" }, asset.addresses.join(", ") || "-"),
     el("td", {}, text(http.status_code || http.outcome)),
     el("td", {}, text(http.title)),
     el("td", {}, when(asset.last_seen_at)));
-}, ["Asset", "Kind", "Authorization", "Addresses", "HTTP", "Title", "Last seen"], "No assets yet.");
+}, ["Asset", "Kind", "Authorization", "Addresses", "HTTP", "Title", "Last seen"], "No assets yet.", filters.form);
+};
 
-views.findings = (root) => paged(root, "Findings", "/findings", (finding) => el("tr", {
+views.findings = (root) => {
+  const filters = filtersFor("findings", ["severity", "confidence", "priority", "status", "owner"]);
+  filters.form.append(el("button", { type: "button", onclick: () => exportReport("findings", "json") }, "Export findings JSON (up to 200)"));
+  return paged(root, "Findings", "/findings?" + filters.query, (finding) => el("tr", {
   class: "link", tabindex: 0,
   onclick: () => show("finding", finding.id),
   onkeydown: (event) => { if (event.key === "Enter") show("finding", finding.id); },
@@ -326,7 +360,8 @@ el("td", {}, remediationBadge(finding.remediation)),
 el("td", {}, finding.title),
 el("td", { class: "mono" }, finding.target + finding.location),
 el("td", {}, when(finding.last_seen_at))),
-["Severity", "Status", "Remediation", "Title", "Where", "Last seen"], "No findings.");
+["Severity", "Status", "Remediation", "Title", "Where", "Last seen"], "No findings.", filters.form);
+};
 
 views.finding = async (root, findingId) => {
   const f = await api(projectPath(`/findings/${encodeURIComponent(findingId)}`));
@@ -340,7 +375,8 @@ views.finding = async (root, findingId) => {
         } catch (error) { notice(error.message, "bad"); }
       },
     }, "Request retest"));
-    const choices = { open: ["triaged", "accepted_risk", "false_positive"], triaged: ["open", "accepted_risk", "false_positive"],
+    const choices = { open: ["triaged", "in_progress", "accepted_risk", "false_positive"], triaged: ["open", "in_progress", "accepted_risk", "false_positive"],
+      in_progress: ["triaged", "accepted_risk", "false_positive"],
       accepted_risk: ["triaged"], false_positive: ["triaged"], resolved: [] }[f.status] || [];
     for (const status of choices) {
       actions.append(el("button", {
@@ -358,6 +394,30 @@ views.finding = async (root, findingId) => {
         },
       }, `Mark ${status.replace("_", " ")}`));
     }
+    actions.append(el("button", { onclick: async () => {
+      const owner = window.prompt("Owner", f.owner || "");
+      if (owner === null) return;
+      const remediation_notes = window.prompt("Remediation notes", f.remediation_notes || "");
+      if (remediation_notes === null) return;
+      const mitigation_notes = window.prompt("Temporary mitigation notes (separate from remediation)", f.mitigation_notes || "");
+      if (mitigation_notes === null) return;
+      try {
+        await api(projectPath(`/findings/${f.id}`), { method: "PATCH", body: { owner, remediation_notes, mitigation_notes } });
+        show("finding", f.id);
+      } catch (error) { notice(error.message, "bad"); }
+    } }, "Owner and notes"));
+    actions.append(el("button", { onclick: async () => {
+      try { await api(projectPath(`/findings/${f.id}/prioritize`), { method: "POST" }); show("finding", f.id); }
+      catch (error) { notice(error.message, "bad"); }
+    } }, "Recompute priority"));
+    actions.append(el("button", { onclick: async () => {
+      const priority = window.prompt("Priority override: P1-P4, or clear");
+      if (!priority) return;
+      const reason = window.prompt("Reason for override");
+      if (!reason) return;
+      try { await api(projectPath(`/findings/${f.id}`), { method: "PATCH", body: { priority, reason } }); show("finding", f.id); }
+      catch (error) { notice(error.message, "bad"); }
+    } }, "Override priority"));
   }
   const evidence = el("div", { class: "evidence" });
   root.replaceChildren(
@@ -367,6 +427,9 @@ views.finding = async (root, findingId) => {
       el("dl", { class: "facts" },
         fact("Where", f.target + f.location), fact("Check", `${f.check_id} v${f.rule_version} (${f.confidence})`),
         fact("Workflow status", f.status), fact("Remediation", remediationBadge(f.remediation)),
+        fact("Owner", f.owner || "Unassigned"), fact("Remediation notes", f.remediation_notes || "-"),
+        fact("Mitigation notes", f.mitigation_notes || "-"), fact("Risk acceptance expiry", when(f.risk_expires_at)),
+        fact("Priority and reasons", JSON.stringify(f.priority_override || f.priority || { level: "not computed" })),
         fact("Detection", `${f.detection.state}, last outcome ${f.detection.last_outcome} at ${when(f.detection.last_outcome_at)}`),
         fact("First / last seen", `${when(f.first_seen_at)} / ${when(f.last_seen_at)}`),
         fact("Seen / recurred", `${f.occurrences} / ${f.recurrences}`),
@@ -387,6 +450,69 @@ views.finding = async (root, findingId) => {
         el("button", { class: "quiet", onclick: () => downloadEvidence(item) }, "Download"))))
       : el("p", { class: "empty" }, "No evidence stored."),
     evidence);
+};
+
+views.asset = async (root, assetId) => {
+  const detail = await api(projectPath(`/assets/${encodeURIComponent(assetId)}`));
+  const asset = detail.asset;
+  const actions = el("div", { class: "actions" });
+  if (can("operate")) actions.append(el("button", { onclick: async () => {
+    const owner = window.prompt("Asset owner", asset.attributes.owner || "");
+    if (owner === null) return;
+    const tags = window.prompt("Tags, comma-separated", (asset.attributes.tags || []).join(","));
+    if (tags === null) return;
+    const importance = window.prompt("Importance: low, normal, high, critical", asset.attributes.importance || "normal");
+    if (importance === null) return;
+    try {
+      await api(projectPath(`/assets/${asset.id}`), { method: "PATCH", body: { owner, tags: tags.split(",").map((v) => v.trim()).filter(Boolean), importance } });
+      show("asset", asset.id);
+    } catch (error) { notice(error.message, "bad"); }
+  } }, "Edit owner, tags and importance"));
+  root.replaceChildren(heading(asset.value), actions,
+    el("pre", { class: "captured" }, JSON.stringify(asset.attributes, null, 2)),
+    el("h2", {}, "Observation timeline"),
+    tableOf(["When", "Kind", "Source", "Evidence"], detail.observations.map((o) => el("tr", {},
+      el("td", {}, when(o.observed_at)), el("td", {}, o.kind), el("td", {}, o.source),
+      el("td", {}, el("pre", { class: "captured" }, JSON.stringify(o.data, null, 2))))), "No observations."));
+};
+
+views.candidates = (root) => paged(root, "Candidate provenance (ownership does not grant permission)", "/candidates", (asset) => el("tr", {},
+  el("td", {}, el("button", { onclick: () => show("asset", asset.id) }, asset.value)),
+  el("td", {}, asset.attributes.ownership_state || "uncertain"),
+  el("td", {}, asset.attributes.authorization_status || asset.authorization),
+  el("td", {}, JSON.stringify(asset.attributes.provenance || {}))),
+["Candidate", "Ownership", "Authorization", "Sources"], "No candidates.");
+
+views.changes = (root) => paged(root, "Exposure changes", "/changes", (change) => {
+  const ack = change.acknowledgement;
+  return el("tr", {}, el("td", {}, when(change.created_at)), el("td", {}, change.target), el("td", {}, change.phase),
+    el("td", {}, el("pre", { class: "captured" }, JSON.stringify(change.changes, null, 2))),
+    el("td", {}, ack ? `Acknowledged: ${ack.reason}` : can("operate") ? el("button", { onclick: async () => {
+      const reason = window.prompt("Acknowledgement reason");
+      if (!reason || !reason.trim()) return;
+      try { await api(projectPath(`/changes/${change.id}/acknowledge`), { method: "POST", body: { reason } }); show("changes"); }
+      catch (error) { notice(error.message, "bad"); }
+    } }, "Acknowledge") : "Unacknowledged"));
+}, ["When", "Target", "Phase", "Before / after", "Acknowledgement"], "No changes since baseline.");
+
+views.intelligence = async (root) => {
+  const data = await api(projectPath("/intelligence?limit=50"));
+  root.replaceChildren(heading("Threat intelligence"),
+    el("p", { class: "hint" }, "Technology hints suggest applicability; these are review items, not confirmed vulnerabilities. No scan is automatically started."),
+    tableOf(["Feed", "Freshness", "Last success", "Details"], data.feeds.map((f) => el("tr", {},
+      el("td", {}, f.source), el("td", {}, badge(f.state, f.state === "fresh" ? "ok" : "warn")),
+      el("td", {}, when(f.fetched_at)), el("td", {}, f.last_error || f.reason))), "No feed status."),
+    tableOf(["Asset", "Advisory", "Product / version", "Applicability", "Reason"], data.items.map((r) => el("tr", {},
+      el("td", {}, r.asset), el("td", {}, r.advisory_id), el("td", {}, `${r.product} ${r.version || "unknown"}`),
+      el("td", {}, r.applicability), el("td", {}, r.reason))), "No applicable advisories in this inventory page. Missing feeds provide no assurance."),
+    el("p", { class: "hint" }, data.next_asset ? `More assets remain after ${data.next_asset}; use intelligence correlate --after-asset for the next page.` : "All assets in this page reviewed."));
+};
+
+views.settings = async (root) => {
+  const data = await api(projectPath("/settings"));
+  root.replaceChildren(heading("Settings and coverage"),
+    el("p", { class: "hint" }, "Read-only effective configuration. Change profiles/environment and restart services to apply settings. Rule approval remains a reviewed manifest change."),
+    el("pre", { class: "captured" }, JSON.stringify(data, null, 2)));
 };
 
 function fact(label, value) {
@@ -424,6 +550,8 @@ views.scope = async (root) => {
       el("h2", {}, `Revision ${revision.number} `, revision.revocation ? badge("REVOKED", "bad") : badge("in force", "ok")),
       el("p", { class: "hint" }, `${when(revision.created_at)}, ports ${revision.permitted_ports}, authorized by `
         + `${revision.authorization.granted_by} (${revision.authorization.kind}: ${revision.authorization.reference})`),
+      el("p", { class: "hint" }, `Authorization window: ${when(revision.authorization.valid_from)} to ${when(revision.authorization.valid_until)}`),
+      el("pre", { class: "mono" }, JSON.stringify(revision.execution_policy, null, 2)),
       el("ul", {}, revision.rules.map((r) => el("li", { class: "mono" }, `${r.effect} ${r.pattern}${r.ports ? " ports " + r.ports : ""}`))),
       revision.revocation ? el("p", { class: "error" }, `Revoked ${when(revision.revocation.revoked_at)}: ${revision.revocation.reason}`) : null));
   }
@@ -443,6 +571,15 @@ function publishForm() {
       "vulnerability_disclosure_program"].map((k) => el("option", { value: k }, k))),
     field("auth-ref", "Reference (program URL, contract id, approval ticket)", { required: true }),
     field("auth-by", "Granted by", { required: true }),
+    el("details", {}, el("summary", {}, "Request limits and authorization window"),
+      field("auth-from", "Valid from (optional, local time)", { type: "datetime-local" }),
+      field("auth-until", "Valid until (optional, local time)", { type: "datetime-local" }),
+      field("schemes", "Allowed schemes (comma-separated)", { value: "https,http", required: true }),
+      field("allow-paths", "Allowed path prefixes (comma-separated)", { value: "/", required: true }),
+      field("exclude-paths", "Excluded path prefixes (comma-separated)", {}),
+      field("check-kinds", "Allowed check classes (http,component; empty disables checks)", { value: "http,component" }),
+      field("request-budget", "Maximum target requests per run", { type: "number", min: "1", max: "10000000", value: "10000", required: true }),
+      el("p", { class: "hint" }, "Discovery probes the first allowed path. Each rule's fixed path is checked independently; this does not crawl all paths.")),
     el("label", { class: "check" }, el("input", { id: "attest", type: "checkbox", required: true }),
       " I am authorized to test every included target under this authorization."),
     el("button", { type: "submit" }, "Publish"));
@@ -456,7 +593,12 @@ function publishForm() {
           includes: list("includes"), excludes: list("excludes"),
           permitted_ports: form.querySelector("#ports").value.trim() || null,
           authorization: { kind: form.querySelector("#auth-kind").value, reference: form.querySelector("#auth-ref").value,
-            granted_by: form.querySelector("#auth-by").value },
+            granted_by: form.querySelector("#auth-by").value,
+            valid_from: form.querySelector("#auth-from").value ? new Date(form.querySelector("#auth-from").value).toISOString() : null,
+            valid_until: form.querySelector("#auth-until").value ? new Date(form.querySelector("#auth-until").value).toISOString() : null },
+          execution_policy: { allowed_schemes: list("schemes"), allowed_paths: list("allow-paths"),
+            excluded_paths: list("exclude-paths"), allowed_check_kinds: list("check-kinds"),
+            max_requests_per_run: Number(form.querySelector("#request-budget").value) },
           attest_authorized: form.querySelector("#attest").checked,
         },
       });

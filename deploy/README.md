@@ -31,11 +31,11 @@ Scope enforcement settings (`[scope]`):
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `default_permitted_ports` | `80,443` | Ports used when a revision does not specify them |
-| `max_redirects` | `5` | Redirects a single request chain may follow |
+| `max_redirects` | `0` | Redirects a single request chain may follow |
 | `allow_https_downgrade` | `false` | Follow HTTPS→HTTP redirects |
 | `allow_private_networks` | `false` | Permit RFC 1918, CGNAT, ULA and `.internal`-style names for internal assessments. Loopback, link-local and cloud metadata stay prohibited. |
 | `extra_prohibited_networks` / `extra_prohibited_hostnames` | `[]` | Deployment-specific never-contact lists (JSON arrays in the environment) |
-| `policy_cache_seconds` | `5` | Upper bound on how long a revocation takes to reach other processes |
+| `policy_cache_seconds` | `5` | UI decision cache only; running pipeline decisions reload revision validity |
 
 Worker settings (`[runtime]`):
 
@@ -57,3 +57,25 @@ Each destination has a `name` (matched against a notification's `channel`), a `k
 ## MongoDB (legacy)
 
 The root `docker-compose.yml` still runs the legacy MongoDB for the existing scripts and for the one-time import (see `migrations/README.md`). It is published on `127.0.0.1` only because it has no authentication.
+
+## Worker egress and request budgets
+
+Layer `compose.workers.yaml` over the base Compose file. The worker and notifier
+share a namespace with the egress guard. Only that bootstrap container holds
+`NET_ADMIN`; runtime processes drop all capabilities. The firewall allows exact
+PostgreSQL/broker IP:port exceptions, configured resolvers on TCP/UDP 53 and
+public TCP 80/443. Private, loopback, metadata/reserved ranges and other ports
+are denied; IPv6 egress is disabled. No Docker socket or host network is used.
+The guard is an address/port boundary, not a hostname scope enforcer; application
+checks are still necessary. Optional tool binaries must still be reviewed.
+
+Recreate the guard **and its dependent workers** if infrastructure IPs or DNS
+settings change. Review required exceptions before deploying. Custom public
+ports permitted in scope also need an explicit firewall policy change and tests.
+Laptops and the private demonstration lab do not use this production namespace.
+
+`scope.per_host_requests_per_minute` defaults to 120, project to 1200, global to
+12000 and `max_requests_per_run` to 10000. PostgreSQL counters share these caps
+across workers/retries; a scope revision can impose a lower per-run cap. Passive
+Subfinder provider calls use tool/provider controls. See [operations](../docs/operations.md)
+for idempotency, feed refresh and retention procedures.

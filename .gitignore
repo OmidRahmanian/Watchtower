@@ -12,8 +12,13 @@ data/
 files/
 last-nuclei/
 output/
+export/
 
 # Python environments and tooling
 .venv/
 *.egg-info/
 .pytest_cache/
+.claude/
+.codex/
+.aws/
+.vscode/

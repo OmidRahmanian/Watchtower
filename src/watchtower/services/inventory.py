@@ -194,6 +194,7 @@ class InventoryService:
                 "root_domain": root,
                 "provenance": provenance,
                 "ownership_confidence": max(entry["confidence"] for entry in provenance.values()),
+                "ownership_state": attributes.get("ownership_state", "uncertain"),
                 "authorization": self._authorization(hostname),
             },
             scope_revision_id=self.scope_revision_id,
@@ -282,7 +283,8 @@ class InventoryService:
         tls = observation.get("tls")
         if tls:
             self._record(asset, ObservationKind.TLS_CERTIFICATE, "http", observed_at, {"url": observation.get("url"), **tls})
-        summary = {key: observation.get(key) for key in ("url", "outcome", "status_code", "title", "ip", "body_sha256", "error")}
+        summary = {key: observation.get(key) for key in ("url", "outcome", "status_code", "title", "ip", "body_sha256", "error",
+                                                        "headers", "tls", "response_time_ms", "technologies")}
         ok = observation.get("outcome") == "ok"
         asset, _ = self.uow.assets.upsert(
             AssetKind.HOSTNAME,

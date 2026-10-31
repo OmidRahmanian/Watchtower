@@ -17,64 +17,28 @@ class PlatformLauncherTests(unittest.TestCase):
         self.output = io.StringIO()
         self.cli = Mock(return_value=0)
 
-    def run_wizard(self, answers, *, token_exists=True, env=None):
-        if token_exists:
-            self.token.write_text("wt_token\n")
-        environment = {"WATCHTOWER__DATABASE__URL": "postgresql://example", "WATCHTOWER_TOKEN_FILE": str(self.token),
-                       **(env or {})}
+    def test_platform_keeps_banner_loads_private_environment_and_opens_home(self):
+        environment = {"WATCHTOWER__DATABASE__URL": "private-database-url"}
         with contextlib.redirect_stdout(self.output), \
-                patch("builtins.input", side_effect=answers), \
                 patch.object(launcher, "runtime_environment", return_value=environment), \
-                patch.object(launcher, "platform_ready"), \
-                patch.object(launcher, "platform_cli", self.cli):
-            return launcher.platform_wizard(self.root)
-
-    def commands(self):
-        return [call.args[3:] for call in self.cli.call_args_list]
-
-    def test_banner_is_kept_and_scope_needs_explicit_confirmation(self):
-        answers = ["1", "acme", "1", "shop.acme.example", "", "1", "TICKET-7", "Acme CISO", "n"]
-        self.assertEqual(self.run_wizard(answers), 0)
+                patch.object(launcher, "platform_ready") as ready, \
+                patch.object(launcher.subprocess, "run", return_value=Mock(returncode=0)) as run:
+            self.assertEqual(launcher.platform_wizard(self.root), 0)
         self.assertIn("WATCHTOWER", self.output.getvalue())
-        self.assertIn("The scope was not changed", self.output.getvalue())
-        self.assertFalse(any("publish" in command for command in self.commands()))
+        ready.assert_called_once()
+        args = run.call_args.args[0]
+        self.assertEqual(args[-1], str(self.root / "terminal_ui.py"))
+        self.assertNotIn("private-database-url", " ".join(args))
+        self.assertEqual(run.call_args.kwargs["env"], environment)
 
-    def test_publishes_authorized_scope_then_starts_and_watches_a_run(self):
-        answers = ["2", "", "1", "acme-lab.test", "legacy.acme-lab.test", "1", "lab/README.md", "Lab Owner", "y",
-                   "1", "y"]
-        self.assertEqual(self.run_wizard(answers), 0)
-        token = ("--token-file", str(self.token))
-        status, publish, start = self.commands()
-        self.assertEqual(status, (*token, "status"))
-        self.assertEqual(publish, (*token, "scope", "publish", "--include", "acme-lab.test", "--include",
-                                   "*.acme-lab.test", "--authorization-kind", "asset_owner", "--reference",
-                                   "lab/README.md", "--granted-by", "Lab Owner", "--i-am-authorized", "--exclude",
-                                   "legacy.acme-lab.test"))
-        self.assertEqual(start, (*token, "run", "start", "--reason", "started from launcher", "--watch", "--work"))
-        env = self.cli.call_args.args[2]
-        self.assertEqual((env["WATCHTOWER_PROFILE"], env["WATCHTOWER_PROJECT"]), ("lab", "acme-lab"))
-
-    def test_target_input_is_validated_before_anything_runs(self):
-        answers = ["1", "Bad Slug!", "acme", "1", "https://acme.example/x", "127.0.0.1", "acme.example", "-",
-                   "2", "SOW-1", "Acme", "y", "4"]
-        self.assertEqual(self.run_wizard(answers), 0)
-        publish = self.commands()[1]
-        self.assertIn("contract", publish)
-        self.assertIn("Use a domain such as example.com", self.output.getvalue())
-        self.assertIn("Enter a domain name rather than an IP address", self.output.getvalue())
-
-    def test_missing_token_offers_bootstrap_and_saves_it_privately(self):
-        answers = ["1", "acme", "y", "Ada Owner", "2", "2", "n"]
-        self.assertEqual(self.run_wizard(answers, token_exists=False), 0)
-        bootstrap, status, watch = self.commands()
-        self.assertEqual(bootstrap, ("bootstrap", "acme", "--owner", "Ada Owner", "--save-token", str(self.token)))
-        self.assertEqual(watch, ("--token-file", str(self.token), "watch"))
-
-    def test_failed_status_stops_before_any_scope_change(self):
-        self.cli.return_value = 2
-        with self.assertRaises(RuntimeError):
-            self.run_wizard(["1", "acme"])
-        self.assertEqual(len(self.cli.call_args_list), 1)
+    def test_platform_dependency_failure_does_not_open_home(self):
+        with contextlib.redirect_stdout(self.output), \
+                patch.object(launcher, "runtime_environment", return_value={}), \
+                patch.object(launcher, "platform_ready", side_effect=RuntimeError("Database not configured")), \
+                patch.object(launcher.subprocess, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "Database not configured"):
+                launcher.platform_wizard(self.root)
+            run.assert_not_called()
 
     def test_mode_menu_routes_to_platform_or_legacy(self):
         with contextlib.redirect_stdout(self.output), patch("builtins.input", side_effect=["1"]), \

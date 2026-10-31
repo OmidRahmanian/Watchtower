@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 from collections.abc import Sequence
 from typing import Any
 from uuid import UUID, uuid4
@@ -20,6 +21,7 @@ from watchtower.domain.scope import (
     RuleKind,
     ScopeRevision,
     ScopeRule,
+    ScopeExecution,
 )
 from watchtower.persistence.repositories.audit import record_audit
 from watchtower.persistence.repositories.records import _ProjectRepository
@@ -122,6 +124,7 @@ class PgScopeRepository(_ProjectRepository):
                 valid_until=auth.valid_until,
                 permitted_ports=str(new.permitted_ports),
                 notes=new.notes,
+                execution_policy=asdict(new.execution_policy),
                 created_by=created_by,
             )
         )
@@ -217,6 +220,7 @@ class PgScopeRepository(_ProjectRepository):
             created_at=row.created_at,
             created_by=row.created_by,
             notes=row.notes,
+            execution_policy=ScopeExecution(**row.execution_policy),
             revocation=None
             if revocation is None
             else Revocation(revoked_at=revocation.revoked_at, reason=revocation.reason, revoked_by=revocation.revoked_by),

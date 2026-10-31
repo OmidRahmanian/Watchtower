@@ -109,7 +109,7 @@ WATCHTOWER__NOTIFICATIONS__DESTINATIONS='[{"name": "ops", "kind": "discord", "ur
 
 ### The guided launcher
 
-`python3 launcher.py` opens with the WatchTower banner and asks whether to use the platform or legacy discovery. The platform path picks a settings profile and a project, creates your owner token if you have none, records the authorization for a domain before it publishes scope, and then starts a run, watches, or opens the dashboard. It drives the same `watchtower` commands shown above. Use `python3 launcher.py --platform` to skip the question.
+`python3 launcher.py` asks whether to use the platform or legacy discovery. The platform path shows the banner once and opens a persistent Home menu. Select a project by number or create one with a separate owner token; project/profile/token-file selections are remembered. Publish authorized scope through **Manage targets and scope**. **Start scan** opens a separate processing/progress terminal while Home remains available for browsing. The dashboard also opens separately, or reuses a running server. See the [terminal guide](terminal.md) for navigation, cancellation and platform support. Use `python3 launcher.py --platform` to skip the mode question.
 
 ## 6. Dashboard and API
 
@@ -143,3 +143,14 @@ WATCHTOWER_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/post
 ```
 
 The URL must be able to create roles and databases. Each test session creates its own non-superuser role and database and drops them afterwards. Without the URL, database tests are skipped. CI runs every test and fails if any is skipped.
+
+## Updating an existing installation
+
+Stop old worker/API processes, update the checkout, and install the package
+extras you use (`python -m pip install -e '.[dev]'` for development). Load the
+same database configuration as before, then run `watchtower-db upgrade` before
+restarting. Revision 0003 adds finding workflow support, immutable scope
+execution policies and durable request counters; existing scope rows inherit
+compatible execution defaults. Back up PostgreSQL and the private evidence
+store before an upgrade. The launcher uses this same database and does not
+require another project token. Start it with `python launcher.py --platform`.

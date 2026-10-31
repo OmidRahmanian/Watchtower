@@ -14,7 +14,10 @@ import gzip
 import io
 import json
 import re
+import ssl
+import time
 from collections.abc import Callable
+from urllib.parse import urlsplit, urlunsplit
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
@@ -36,16 +39,43 @@ class ParsedFeed:
 
 
 def requests_transport(url: str) -> bytes:
-    import requests
+    """HTTPS to one policy-approved address, without proxies or redirects.
 
-    with requests.get(url, timeout=60, stream=True, headers={"User-Agent": "WatchTower-intel/1"}) as response:
-        response.raise_for_status()
-        body = b""
-        for chunk in response.iter_content(1 << 20):
-            body += chunk
-            if len(body) > MAX_DOWNLOAD:
-                raise FeedError("download exceeds size limit")
-        return body
+    The historical function name is retained for callers; requests is no longer
+    required. Error messages intentionally exclude the URL and its credentials.
+    """
+    from watchtower.adapters.probing.http import PinnedHTTPSConnection, system_resolve
+    from watchtower.security.destinations import DestinationPolicy
+
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        raise FeedError("feed must be an HTTPS URL without credentials")
+    policy = DestinationPolicy()
+    host, port = parts.hostname, parts.port or 443
+    if policy.check_hostname(host):
+        raise FeedError("feed hostname is prohibited")
+    addresses = list(system_resolve(host, port))
+    if not addresses or any(policy.check_address(a) for a in addresses):
+        raise FeedError("feed resolved to a prohibited destination")
+    connection = PinnedHTTPSConnection(host, addresses[0], port, 20, ssl.create_default_context())
+    try:
+        connection.request("GET", urlunsplit(("", "", parts.path or "/", parts.query, "")),
+                           headers={"User-Agent": "WatchTower-intel/1", "Connection": "close"})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise FeedError(f"feed returned HTTP {response.status}; redirects are not followed")
+        deadline = time.monotonic() + 60
+        body = bytearray()
+        while len(body) <= MAX_DOWNLOAD:
+            if time.monotonic() > deadline:
+                raise FeedError("feed download timed out")
+            chunk = response.read(min(1 << 20, MAX_DOWNLOAD + 1 - len(body)))
+            if not chunk:
+                return bytes(body)
+            body.extend(chunk)
+        raise FeedError("feed download exceeds size limit")
+    finally:
+        connection.close()
 
 
 def parse_time(value: str) -> datetime:
@@ -115,7 +145,10 @@ class EpssFeed(Feed):
     def parse(self, raw: bytes) -> ParsedFeed:
         try:
             if raw[:2] == b"\x1f\x8b":
-                raw = gzip.decompress(raw)
+                with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+                    raw = compressed.read(MAX_DOWNLOAD + 1)
+                if len(raw) > MAX_DOWNLOAD:
+                    raise FeedError("uncompressed feed exceeds size limit")
             lines = io.StringIO(raw.decode("utf-8"))
             meta = {}
             first = lines.readline()
@@ -154,12 +187,22 @@ class AdvisoryFeed(Feed):
                     if not set(affected) <= {"introduced", "fixed", "last_affected"} or \
                             ("fixed" in affected and "last_affected" in affected):
                         raise FeedError(f"advisory {item['id']} has an invalid range")
+                    from watchtower.adapters.intelligence.applicability import parse_version, compare
+                    bounds = {name: parse_version(value) for name, value in affected.items()}
+                    if any(parsed is None or suffix for parsed, suffix in bounds.values()):
+                        raise FeedError(f"advisory {item['id']} has an uncomparable version bound")
+                    start = bounds.get("introduced", ((0,), ""))[0]
+                    if ("fixed" in bounds and compare(bounds["fixed"][0], start) <= 0) or \
+                            ("last_affected" in bounds and compare(bounds["last_affected"][0], start) < 0):
+                        raise FeedError(f"advisory {item['id']} has reversed version bounds")
                 cvss = item.get("cvss")
                 if cvss is not None and not 0 <= float(cvss) <= 10:
                     raise FeedError(f"advisory {item['id']} has an invalid CVSS score")
                 records[item["id"]] = {
                     "id": item["id"], "cves": list(item.get("cves", [])), "product": item["product"].lower(),
                     "affected": item["affected"], "cvss": cvss, "summary": item.get("summary", ""),
+                    "prerequisites": item.get("prerequisites", []), "platforms": item.get("platforms", []),
+                    "references": item.get("references", []), "source": item.get("source", ""),
                 }
             published = parse_time(data["generated_at"]) if data.get("generated_at") else None
         except (KeyError, TypeError, ValueError) as error:

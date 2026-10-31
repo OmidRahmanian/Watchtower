@@ -72,6 +72,31 @@ def test_world_readable_token_file_is_refused(run_cli, tmp_path, project_id):
     assert code == 1 and "chmod 600" in err
 
 
+def test_projects_lists_only_accessible_projects_and_honors_token_restriction(run_cli, database, member, project_id, other_project_id):
+    import json
+
+    owner = member(project_id, ProjectRole.OWNER, restrict=True)
+    with database.system() as system:
+        system.auth.set_membership(other_project_id, owner.principal_id, ProjectRole.VIEWER)
+    code, out, _ = run_cli("projects", "--json", token=owner.token)
+    assert code == 0
+    assert [p["id"] for p in json.loads(out)] == [str(project_id)]
+    code, out, _ = run_cli("projects", "--json", token="invalid")
+    assert code == 2 and not out
+
+
+def test_json_start_returns_exactly_one_queued_run_without_watching(run_cli, member, project_id):
+    import json
+
+    operator = member(project_id, ProjectRole.OPERATOR)
+    code, out, _ = run_cli("run", "start", "--json", token=operator.token, project=project_id)
+    assert code == 0
+    result = json.loads(out)
+    assert result["status"] == "queued"
+    assert len([c for c in run_cli.runs.calls if c[0] == "start_run"]) == 1
+    assert str(next(iter(run_cli.runs.runs))) == result["run_id"]
+
+
 def test_roles_are_enforced(run_cli, member, project_id):
     viewer = member(project_id, ProjectRole.VIEWER)
     code, _, err = run_cli(*PUBLISH, "--i-am-authorized", token=viewer.token, project=project_id)

@@ -28,7 +28,7 @@ def level_for(score: int) -> str:
 
 
 def prioritize(finding: FindingRecord, intelligence: IntelligenceStore, kev: Feed, epss: Feed,
-               now: datetime | None = None) -> dict:
+               now: datetime | None = None, importance: str = "normal") -> dict:
     now = now or utcnow()
     factors: list[dict] = []
 
@@ -36,6 +36,10 @@ def prioritize(finding: FindingRecord, intelligence: IntelligenceStore, kev: Fee
         factors.append({"factor": name, "points": points, "detail": detail})
 
     factor("severity", SEVERITY_POINTS[finding.severity], f"{finding.severity.value} severity from {finding.check_id}")
+    if importance not in ("low", "normal", "high", "critical"):
+        raise ValueError("invalid asset importance")
+    if importance in ("high", "critical"):
+        factor("asset_importance", 5 if importance == "high" else 10, f"asset importance is {importance}")
     if CONFIDENCE_POINTS[finding.confidence]:
         factor("confidence", CONFIDENCE_POINTS[finding.confidence], f"{finding.confidence} confidence")
 

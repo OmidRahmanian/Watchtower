@@ -42,3 +42,7 @@ class PermissionDenied(WatchtowerError):
 
 class RunCancelled(WatchtowerError):
     """A job was enqueued for a run whose cancellation was already requested."""
+
+
+class RequestConflict(WatchtowerError):
+    """An idempotency key was reused with different scan parameters."""

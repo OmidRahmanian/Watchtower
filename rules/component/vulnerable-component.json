@@ -14,5 +14,23 @@
     "openssl": "openssl:openssl",
     "microsoft-iis": "microsoft:iis",
     "lighttpd": "lighttpd:lighttpd"
+  },
+  "execution_policy": {
+    "source": "WatchTower native rule",
+    "license": "MIT",
+    "engine": "watchtower-native/1",
+    "protocol": "inventory",
+    "requests_per_endpoint": 0,
+    "writes_data": false,
+    "browser": false,
+    "executes_code": false,
+    "external_callbacks": false,
+    "credentials": false,
+    "required_permissions": [
+      "operate",
+      "authorized_scope"
+    ],
+    "evidence_policy": "bounded-redacted-excerpt",
+    "remediation": "Verify vendor applicability and prerequisites, then apply the vendor-recommended supported fix."
   }
 }

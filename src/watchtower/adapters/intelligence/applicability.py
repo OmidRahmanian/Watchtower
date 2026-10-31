@@ -64,6 +64,9 @@ def match_component(product: str, version: str | None, advisory: dict) -> Match:
     if hit is None:
         return Match(Applicability.NOT_AFFECTED, f"{product} {version} is outside every affected range")
     bound = hit.get("fixed") and f"fixed in {hit['fixed']}" or f"last affected {hit.get('last_affected', 'open')}"
+    if advisory.get("prerequisites") or advisory.get("platforms"):
+        return Match(Applicability.POSSIBLE,
+                     f"{product} {version} is in range ({bound}), but platform/configuration prerequisites remain unverified")
     if suffix.strip():
         return Match(Applicability.POSSIBLE,
                      f"{product} {version} is in range ({bound}) but the vendor suffix may carry a backported fix")

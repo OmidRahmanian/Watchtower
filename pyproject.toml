@@ -8,7 +8,8 @@ version = "0.2.0.dev0"
 description = "Authorized attack surface monitoring with PostgreSQL persistence and scope enforcement."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "alembic>=1.13,<2",
     "dnspython>=2.6",
