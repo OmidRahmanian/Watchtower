@@ -8,12 +8,12 @@ A run works through four phases for each root domain in the current scope revisi
 
 | Phase | What it does | Sources | Never does |
 | --- | --- | --- | --- |
-| discovery | finds hostnames under the root | `subfinder` (passive sources), or a seed file / CSV (`manual`) | brute-force names; add a name that is out of scope |
+| discovery | finds hostnames under the root | `subfinder` (passive sources), or a seed file / CSV (`manual`) | brute-force names; authorize a candidate merely because it was discovered |
 | dns | resolves A, AAAA and CNAME for known hosts, with wildcard detection | the system resolver, or `pipeline.dns_nameservers` | treat a failed lookup as a removal |
-| http | probes each host over the configured schemes and records status, title, headers, body digest and TLS certificate | a pinned connection to an address the scope approved | follow a redirect out of scope; send credentials |
+| http | probes each host over the configured schemes and records status, title, headers, body digest and TLS certificate | a pinned connection to an address and URL policy the scope approved | follow a redirect out of scope; send credentials |
 | checks | runs the approved detection rules against each HTTP endpoint | `rules/` | run a rule that is pending approval |
 
-Changes between runs become alerts: new assets, DNS and HTTP changes, opened, reopened and resolved findings. By default, a DNS or HTTP modification must be seen on two consecutive runs before it alerts (`pipeline.confirm_changes`), which filters out flapping. A baseline run never alerts.
+Changes between runs become alerts: new assets, DNS and HTTP changes, opened, reopened and resolved findings. By default, a DNS or HTTP modification must be seen on two consecutive runs before it alerts (`pipeline.confirm_changes`), which filters out flapping. A baseline run never sends a change alert; a failed run still reports its failure.
 
 ## Detection rules
 
@@ -62,3 +62,36 @@ Every test below runs against PostgreSQL with row-level security as a non-superu
 | Pagination | Assets, findings, runs and alerts page without gaps or repeats. Malformed or foreign cursors are rejected. | `tests/api/test_api_data.py` |
 
 The end-to-end tests drive the real API, CLI, run service, worker and notifier. Only outbound DNS, HTTP and webhook calls are answered in-process (`tests/runtime/runtime_support.py`), and detection uses a temporary, test-only approved copy of the rule manifest (`tests/checks_support.py`). The [lab](../lab/README.md) runs the same journey against real containers.
+
+## Investigation and operational controls
+
+The default native pipeline schedules HTTP and component checks. Approved
+component rules need configured, refreshed advisory data and a usable approved
+source-banner result; otherwise they report missing coverage. An HTTP-only
+profile explicitly disables component scheduling. Shipped approvals remain
+pending in every profile.
+
+`tests/api/test_operations.py` covers ownership/filter isolation, timelines,
+exports, exception handling, changes and intelligence review. `test_maintenance.py`
+covers retention and expired risk decisions. `tests/test_scope_execution.py` and
+`tests/runtime/test_blueprint_controls.py` cover URL path/scheme policy, durable
+request keys/budgets and mid-phase revocation. Firewall generation and worker
+namespace topology have separate tests. See [blueprint coverage](blueprint-coverage.md)
+for deliberate alternatives and future work.
+
+## Measurement method and limits
+
+The end-to-end dataset is a small, deterministic in-process DNS/HTTP lab. It
+introduces a known exposure, a changed page and a new hostname, then exercises
+an outage, failed retest, fix and recurrence. Assertions count known detections,
+phase coverage, grouped alert delivery, duplicates and resolution transitions.
+Runtime tests exercise leases, crash/retry recovery, cancellation and retries.
+Per-phase statistics expose hosts/probes and run timestamps for local duration
+and request-volume inspection; shared counters enforce traffic caps.
+
+Run `pytest tests` against a disposable PostgreSQL role/database as described
+in CI. Record the commit, environment, test summary and duration alongside any
+measurement. Synthetic known positives/negatives do not measure finding precision
+on real applications. This project publishes no real-world false-positive,
+throughput or commercial-parity claim; those require an independently reviewed
+labeled dataset and a controlled deployment benchmark.

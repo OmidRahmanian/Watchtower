@@ -32,10 +32,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
+import hashlib
+import json
+import ssl
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import and_, func, or_, select, tuple_
+from sqlalchemy import and_, func, or_, select, tuple_, text
 
 from watchtower.adapters.checks import (
     CheckResult, Endpoint, Outcome as CheckOutcome, RuleNotApproved, RuleSet, build_checks, load_manifest,
@@ -47,22 +50,22 @@ from watchtower.adapters.discovery.dns import DnsCollector, DnsPythonResolver, R
 from watchtower.adapters.probing.guard import explain
 from watchtower.adapters.probing.http import HttpProber
 from watchtower.config.settings import Settings
-from watchtower.domain.errors import NotFound, RunCancelled, ScopeViolation
+from watchtower.domain.errors import NotFound, RunCancelled, ScopeViolation, RequestConflict
 from watchtower.domain.models import (
     Job, JobStatus, NewJob, NewNotification, NewPhaseSnapshot, Notification, PhaseComparison, PhaseSnapshot,
-    PhaseStatus, RunPhase,
+    PhaseStatus, RunPhase, AssetKind,
 )
 from watchtower.domain.repositories import BlobStore, ProjectUnitOfWork
 from watchtower.domain.scope import DecisionReason, RuleKind, ScopePolicy
 from watchtower.persistence.database import Database
 from watchtower.persistence.repositories.queue import _notification
-from watchtower.persistence.tables import jobs as jobs_table, notifications as notifications_table
+from watchtower.persistence.tables import jobs as jobs_table, notifications as notifications_table, run_requests
 from watchtower.security.auth import Permission, ProjectContext
 from watchtower.services import changes
 from watchtower.services.evidence import to_new_evidence
 from watchtower.services.findings import FindingError, FindingRecord, FindingService, RepositoryFindingStore
 from watchtower.services.inventory import InventoryService, in_domain, normalize_hostname, utcnow
-from watchtower.services.scope import ScopeService
+from watchtower.services.scope import ScopeService, LiveScopePolicy
 
 PHASES: tuple[RunPhase, ...] = (RunPhase.DISCOVERY, RunPhase.DNS, RunPhase.HTTP, RunPhase.CHECKS)
 PHASE_KINDS = {phase: f"monitor.{phase.value}" for phase in PHASES}
@@ -242,7 +245,12 @@ class Pipeline:
                 # the race with its predecessor's completion commit.
                 return {"notifications": 0, "pending_predecessors": True}
             return {"notifications": self.finalize(job.project_id, job.run_id)}
-        policy = self.scope.policy_for_revision(job.project_id, job.scope_revision_id)
+        policy = LiveScopePolicy(self.scope, job.project_id, job.scope_revision_id)
+        from watchtower.services.budgets import RequestLimiter
+        limits = self.settings.scope.model_copy(update={"max_requests_per_run": min(self.settings.scope.max_requests_per_run,
+                                                                                 policy.execution_policy.max_requests_per_run)})
+        policy.limiter = RequestLimiter(self.db, limits, job.project_id, job.run_id, token,
+                                       lambda host: self.scope.policy_for_revision(job.project_id, job.scope_revision_id).check_target(host, port=None))
         if job.kind == RETEST:
             result = self._retest(job, policy, token)
         else:
@@ -329,7 +337,7 @@ class Pipeline:
             stats={"errors": errors[:20], "skipped": skipped, "out_of_scope": len(names) - len(allowed)},
         )
         return self._record(job, RunPhase.DISCOVERY, target, observed,
-                            lambda uow: InventoryService(uow, policy=policy, job_id=job.id).ingest(allowed))
+                            lambda uow: InventoryService(uow, policy=policy, job_id=job.id).ingest(names))
 
     def _dns(self, job: Job, target: str, policy: ScopePolicy, token: CancelToken) -> str:
         with self.db.project(job.project_id) as uow:
@@ -358,24 +366,41 @@ class Pipeline:
     def _http(self, job: Job, target: str, policy: ScopePolicy, token: CancelToken) -> str:
         with self.db.project(job.project_id) as uow:
             assets = _hosts_under(InventoryService(uow), target)
-        schemes = self.settings.pipeline.http_schemes
+        schemes = [scheme for scheme in self.settings.pipeline.http_schemes if scheme in policy.execution_policy.allowed_schemes]
+        if not schemes:
+            return self._record(job, RunPhase.HTTP, target,
+                                changes.Observed(items=[], failed=True, complete=False,
+                                                 stats={"probes": 0, "reason": "No configured HTTP scheme is permitted by the scope"}),
+                                lambda uow: None)
         hosts = [a.value for a in assets if a.attributes.get("dns_status", "resolved") == "resolved"]
         # Hosts without a current address are not probed. The DNS phase reports them as
         # gone or unresolvable; here they are unknown, so they are neither removed nor alerted twice.
         items = [changes.Item(f"{scheme}://{a.value}", uncertain=True) for a in assets if a.value not in hosts
                  for scheme in schemes]
-        prober = self.adapters.prober(policy) if self.adapters.prober else HttpProber(policy, clock=self.clock)
+        prober = self.adapters.prober(policy) if self.adapters.prober else HttpProber(
+            policy, clock=self.clock, max_redirects=self.settings.scope.max_redirects)
         results = []
         for host in hosts:
             for scheme in schemes:
                 token.check()
-                results.append(prober.probe(host, scheme=scheme))
+                path = policy.execution_policy.allowed_paths[0]
+                results.append(prober.probe(host, scheme=scheme, path=path))
         for result in results:
             key = f"{result['scheme']}://{result['hostname']}"
             if result["outcome"] == "ok":
                 location = (result.get("headers") or {}).get("location")
+                tls = result.get("tls") or {}
+                expiring = None
+                if tls.get("not_after"):
+                    try:
+                        expiring = ssl.cert_time_to_seconds(tls["not_after"]) - self.clock().timestamp() <= 30 * 86400
+                    except (ValueError, TypeError):
+                        pass
                 items.append(changes.Item(key, {"status_code": result["status_code"], "title": result.get("title", ""),
-                                                "location": location}))
+                                                "location": location, "server": (result.get("headers") or {}).get("server"),
+                                                "body_sha256": result.get("body_sha256"),
+                                                "tls_fingerprint": tls.get("sha256"), "tls_expiring": expiring,
+                                                "tls_hostname_mismatch": "hostname mismatch" in str(tls.get("verify_error", "")).lower()}))
             elif (result.get("error") or {}).get("kind") == "connection_refused":
                 items.append(changes.Item(key, {"reachable": False}))
             else:  # timeouts, TLS and protocol errors, refused or unauthorized destinations prove nothing
@@ -410,14 +435,22 @@ class Pipeline:
         pipeline does not run at all, which does not make a phase partial.
         """
         authorize = self.adapters.authorizer(policy) if self.adapters.authorizer else scope_authorizer(policy)
+        endpoints = list(endpoints)
         options = {"fetch": self.adapters.fetch} if self.adapters.fetch else {}
         http_checks, component_checks = build_checks(self.ruleset, authorize=authorize, **options)
-        not_scheduled = {rule_id: "component checks need advisory feeds and are not scheduled by the pipeline"
-                         for rule_id in component_checks if only in (None, rule_id)}
+        configured = bool(self.settings.intelligence.advisory_file or self.settings.intelligence.advisory_url)
+        not_scheduled = {}
         not_run: dict[str, str] = {}
         results = []
         for rule_id, check in sorted(http_checks.items()):
-            if only is not None and rule_id != only:
+            if "http" not in self.settings.pipeline.check_kinds:
+                not_scheduled[rule_id] = "HTTP checks disabled in this profile"
+                continue
+            if "http" not in policy.execution_policy.allowed_check_kinds:
+                not_run[rule_id] = "HTTP checks not permitted by this scope revision"
+                continue
+            source_rule = component_checks[only].rule.definition["source_rule"] if only in component_checks else None
+            if only is not None and rule_id not in (only, source_rule):
                 continue
             for endpoint in endpoints:
                 token.check()
@@ -427,14 +460,55 @@ class Pipeline:
                     # Recorded as "not run": never a negative, so it can never resolve a finding.
                     not_run[rule_id] = str(exc)
                     break
+        from watchtower.services.intelligence import IntelligenceService
+        intelligence = IntelligenceService(self.settings)
+        advisories = intelligence.store.records("advisories") if configured else []
+        sources = list(results)
+        for rule_id, check in component_checks.items():
+            if only not in (None, rule_id):
+                continue
+            if "component" not in self.settings.pipeline.check_kinds:
+                not_scheduled[rule_id] = "component checks disabled in this profile"
+                continue
+            if "component" not in policy.execution_policy.allowed_check_kinds:
+                not_run[rule_id] = "component checks not permitted by this scope revision"
+                continue
+            if not check.rule.approved:
+                not_run[rule_id] = f"{rule_id} is pending maintainer approval"
+                continue
+            if not configured:
+                not_run[rule_id] = "advisory input is not configured; component coverage is unavailable"
+                continue
+            if not advisories:
+                not_run[rule_id] = "configured advisory feed has no cached data; refresh intelligence first"
+                continue
+            usable = [source for source in sources if source.check_id == check.rule.definition["source_rule"]
+                      and source.outcome == CheckOutcome.DETECTED]
+            if endpoints and not usable:
+                not_run[rule_id] = "source check disclosed no usable component evidence; applicability remains unknown"
+                continue
+            for source in usable:
+                token.check()
+                results.extend(check.evaluate(source, advisories))
+        if only is not None:
+            results = [result for result in results if result.check_id == only]
         return results, not_run, not_scheduled
 
     def _ingest(self, uow: ProjectUnitOfWork, policy: ScopePolicy, results: Sequence[CheckResult],
                 apply: Callable[[FindingService, CheckResult], Any]) -> None:
+        from watchtower.services.maintenance import evidence_lock
+        evidence_lock(uow.connection, uow.project_id)
         service = FindingService(RepositoryFindingStore(uow, policy.revision_id),
                                  canonical_id=self.ruleset.canonical_id)
+        from watchtower.services.intelligence import IntelligenceService
+        from watchtower.services.prioritization import prioritize
+        intelligence = IntelligenceService(self.settings)
         for result in results:
             record = apply(service, result)
+            if record is not None:
+                asset = uow.assets.find(AssetKind.HOSTNAME, record.target.host)
+                service.set_priority(record.fingerprint, prioritize(record, intelligence.store, intelligence.feeds[0],
+                                     intelligence.feeds[1], importance=asset.attributes.get("importance", "normal") if asset else "normal"))
             if record is not None and result.evidence:
                 stored = uow.findings.get_by_fingerprint(record.fingerprint)
                 uow.evidence.add(to_new_evidence(result.evidence, self._blobs(), uow.project_id, finding_id=stored.id))
@@ -661,16 +735,48 @@ class RunService:
         return chosen
 
     def _start(self, project_id: UUID, policy: ScopePolicy, meta: dict[str, Any], *, run_id: UUID | None = None,
-               extra: Mapping[str, Any] | None = None) -> RunSummary:
+               extra: Mapping[str, Any] | None = None, reuse_active: bool = False, request_id: UUID | None = None) -> RunSummary:
         run_id = run_id or uuid4()
         with self.db.project(project_id) as uow:
+            uow.connection.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                                   {"key": "watchtower:start:" + str(project_id)})
+            payload_hash = hashlib.sha256(json.dumps({"scope": str(policy.revision_id), "run": meta}, sort_keys=True).encode()).hexdigest()
+            if request_id is not None:
+                previous = uow.connection.execute(select(run_requests).where(
+                    run_requests.c.project_id == project_id, run_requests.c.request_id == request_id)).one_or_none()
+                if previous is not None:
+                    if previous.payload_sha256 != payload_hash:
+                        raise RequestConflict("idempotency key already used with different parameters or scope")
+                    return summarize(uow.jobs.list_for_run(previous.run_id), uow.phase_snapshots.list_for_run(previous.run_id))
+            def remember(actual_run_id):
+                if request_id is not None:
+                    uow.connection.execute(run_requests.insert().values(project_id=project_id, request_id=request_id,
+                                                                        run_id=actual_run_id, payload_sha256=payload_hash))
+            existing = list(uow.jobs.list_for_run(run_id))
+            if existing:
+                old = existing[0].payload["run"]
+                if existing[0].scope_revision_id != policy.revision_id or old != meta:
+                    raise RequestConflict("idempotency key already used with different parameters or scope")
+                remember(run_id)
+                return summarize(existing, uow.phase_snapshots.list_for_run(run_id))
+            if reuse_active:
+                active = list(uow.connection.execute(select(jobs_table.c.run_id, jobs_table.c.payload, jobs_table.c.scope_revision_id).where(
+                    jobs_table.c.project_id == project_id, jobs_table.c.status.in_(["queued", "running"]),
+                    jobs_table.c.run_id.is_not(None))))
+                for row in active:
+                    old = row.payload.get("run", {})
+                    if row.scope_revision_id == policy.revision_id and all(old.get(k) == meta.get(k) for k in ("kind", "targets", "phases")):
+                        remember(row.run_id)
+                        return summarize(uow.jobs.list_for_run(row.run_id), uow.phase_snapshots.list_for_run(row.run_id))
             uow.jobs.enqueue(_new_step(run_id, policy.revision_id, meta, _steps(meta)[0], extra or {}))
+            remember(run_id)
             summary = summarize(uow.jobs.list_for_run(run_id), [])
         self._kick()
         return summary
 
     def start_run(self, project_id: UUID, *, actor: ProjectContext, targets: list[str] | None = None,
-                  phases: list[RunPhase] | None = None, reason: str = "") -> RunSummary:
+                  phases: list[RunPhase] | None = None, reason: str = "", idempotency_key: str | None = None,
+                  reuse_active: bool = False) -> RunSummary:
         _require(actor, project_id, Permission.OPERATE)
         self.scope.invalidate(project_id)
         policy = self.scope.current_policy(project_id)
@@ -678,7 +784,10 @@ class RunService:
         ordered = [p.value for p in PHASES if p in {RunPhase(x) for x in phases}] if phases else [p.value for p in PHASES]
         meta = {"kind": "scan", "requested_by": str(actor.principal.id), "reason": reason, "targets": chosen,
                 "phases": ordered}
-        return self._start(project_id, policy, meta)
+        if idempotency_key is not None and not 1 <= len(idempotency_key) <= 200:
+            raise ValueError("idempotency key must contain 1-200 characters")
+        run_id = uuid5(NAMESPACE_URL, f"watchtower:{project_id}:request:{actor.principal.id}:{idempotency_key}") if idempotency_key else None
+        return self._start(project_id, policy, meta, run_id=run_id, reuse_active=reuse_active, request_id=run_id)
 
     def start_scheduled(self, project_id: UUID, *, slot: str) -> RunSummary | None:
         """Start the run for schedule slot ``slot`` (for example ``"2026-10-30T06"``); repeats are no-ops."""
@@ -692,7 +801,8 @@ class RunService:
         run_id = uuid5(NAMESPACE_URL, f"watchtower:{project_id}:scheduled:{slot}")
         try:
             return self._start(project_id, policy, meta, run_id=run_id)
-        except RunCancelled:
+        except (RunCancelled, RequestConflict):
+            # A published scope must not enqueue a second run for the same slot.
             return None
 
     def request_retest(self, project_id: UUID, fingerprint: str, *, actor: ProjectContext,

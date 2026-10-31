@@ -195,6 +195,7 @@ class Severity(StrEnum):
 class FindingStatus(StrEnum):
     OPEN = "open"
     TRIAGED = "triaged"
+    IN_PROGRESS = "in_progress"
     RESOLVED = "resolved"
     FALSE_POSITIVE = "false_positive"
     ACCEPTED_RISK = "accepted_risk"

@@ -56,12 +56,16 @@ class DatabaseSettings(_Section):
 
 class ScopeSettings(_Section):
     default_permitted_ports: str = "80,443"
-    max_redirects: int = Field(default=5, ge=0, le=20)
+    max_redirects: int = Field(default=0, ge=0, le=20)
     allow_https_downgrade: bool = False
     allow_private_networks: bool = False
     extra_prohibited_networks: tuple[str, ...] = ()
     extra_prohibited_hostnames: tuple[str, ...] = ()
     policy_cache_seconds: float = Field(default=5.0, ge=0, le=300)
+    per_host_requests_per_minute: int = Field(default=120, ge=1, le=10000)
+    per_project_requests_per_minute: int = Field(default=1200, ge=1, le=100000)
+    global_requests_per_minute: int = Field(default=12000, ge=1, le=1000000)
+    max_requests_per_run: int = Field(default=10000, ge=1, le=10000000)
 
     @field_validator("default_permitted_ports")
     @classmethod
@@ -164,6 +168,8 @@ class PipelineSettings(_Section):
     dns_nameservers: tuple[str, ...] = ()  # empty uses the system resolver
     http_schemes: tuple[Literal["https", "http"], ...] = ("https", "http")
     evidence_root: str = "data/evidence"
+    evidence_retention_days: int = Field(default=90, ge=1, le=3650)
+    check_kinds: tuple[Literal["http", "component"], ...] = ("http", "component")
     # Consecutive runs a modified or removed value must be seen before it is accepted and alerted.
     confirm_changes: dict[str, int] = Field(default_factory=lambda: {"dns": 2, "http": 2})
 
@@ -181,6 +187,20 @@ class PipelineSettings(_Section):
         return self
 
 
+class IntelligenceSettings(_Section):
+    cache_root: str = "data/intelligence"
+    advisory_url: str = ""
+    advisory_file: str = ""  # normalized, operator-supplied vendor advisory JSON
+    refresh_interval_seconds: int = Field(default=3600, ge=60)
+
+    @field_validator("advisory_url")
+    @classmethod
+    def _https(cls, value: str) -> str:
+        if value and not value.startswith("https://"):
+            raise ValueError("advisory_url must use HTTPS")
+        return value
+
+
 class Settings(_Section):
     profile: str = "development"
     log_level: str = "INFO"
@@ -190,6 +210,7 @@ class Settings(_Section):
     runtime: RuntimeSettings = RuntimeSettings()
     notifications: NotificationSettings = NotificationSettings()
     pipeline: PipelineSettings = PipelineSettings()
+    intelligence: IntelligenceSettings = IntelligenceSettings()
 
 
 def load_settings(profile: str | None = None, *, environ: Mapping[str, str] | None = None) -> Settings:

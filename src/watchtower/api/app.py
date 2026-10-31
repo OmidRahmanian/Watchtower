@@ -51,10 +51,11 @@ from watchtower.domain.errors import (
     RunCancelled,
     ScopeViolation,
     WatchtowerError,
+    RequestConflict,
 )
 from watchtower.domain.models import AssetKind, FindingStatus, Severity
 from watchtower.domain.repositories import BlobStore
-from watchtower.domain.scope import AuthorizationReference, RuleEffect, ScopeRule
+from watchtower.domain.scope import AuthorizationReference, RuleEffect, ScopeRule, ScopeExecution
 from watchtower.persistence.database import Database
 from watchtower.security.auth import Permission, ProjectContext
 from watchtower.services.evidence_store import BlobError, FilesystemBlobStore
@@ -129,6 +130,7 @@ class RunsUnavailable(WatchtowerError):
 # -- errors and headers ---------------------------------------------------
 
 _STATUS: list[tuple[type[Exception], int, str]] = [
+    (RequestConflict, 409, "request_conflict"),
     (AuthenticationFailed, 401, "authentication_failed"),
     (PermissionDenied, 403, "permission_denied"),
     (NotFound, 404, "not_found"),
@@ -274,6 +276,7 @@ def publish_scope(project_id: UUID, body: schemas.PublishScopeIn, ctx: Context, 
         actor=ctx,
         permitted_ports=body.permitted_ports,
         notes=body.notes,
+        execution_policy=ScopeExecution(**body.execution_policy.model_dump()),
     )
     return schemas.revision_out(revision)
 
@@ -290,7 +293,9 @@ def revoke_scope(
 def check_scope(project_id: UUID, body: schemas.ScopeCheckIn, ctx: Context, svc: Services) -> schemas.ScopeDecisionOut:
     """Would the current scope authorize this target? Sends no traffic."""
     ctx.require(Permission.VIEW)
-    return schemas.decision_out(svc.scope.authorize_target(project_id, body.target, port=body.port))
+    decision = (svc.scope.authorize_url(project_id, body.target) if body.target.startswith(("http://", "https://"))
+                else svc.scope.authorize_target(project_id, body.target, port=body.port))
+    return schemas.decision_out(decision)
 
 
 # -- inventory ------------------------------------------------------------
@@ -305,6 +310,9 @@ def list_assets(
     search: Annotated[str | None, Query(max_length=253)] = None,
     cursor: Annotated[str | None, Query(max_length=1024)] = None,
     limit: Limit = DEFAULT_LIMIT,
+    owner: Annotated[str | None, Query(max_length=200)] = None,
+    tag: Annotated[str | None, Query(max_length=64)] = None,
+    technology: Annotated[str | None, Query(max_length=200)] = None,
 ) -> schemas.Page[schemas.AssetOut]:
     ctx.require(Permission.VIEW)
     after = None
@@ -312,7 +320,8 @@ def list_assets(
         kind_value, value = decode_cursor(cursor, "assets", 2)
         after = (str(kind_value), str(value))
     with svc.database.project(project_id) as uow:
-        rows = queries.list_assets(uow, limit=limit + 1, kind=kind, search=search, after=after)
+        rows = queries.list_assets(uow, limit=limit + 1, kind=kind, search=search, after=after,
+                                   owner=owner, tag=tag, technology=technology)
     page, more = rows[:limit], len(rows) > limit
     return schemas.Page[schemas.AssetOut](
         items=[schemas.asset_out(asset) for asset in page],
@@ -347,6 +356,9 @@ def list_findings(
     asset_id: UUID | None = None,
     cursor: Annotated[str | None, Query(max_length=1024)] = None,
     limit: Limit = DEFAULT_LIMIT,
+    owner: Annotated[str | None, Query(max_length=200)] = None,
+    confidence: Annotated[str | None, Query(pattern="^(tentative|firm|confirmed)$")] = None,
+    priority: Annotated[str | None, Query(pattern="^P[1-4]$")] = None,
 ) -> schemas.Page[schemas.FindingOut]:
     ctx.require(Permission.VIEW)
     before = None
@@ -355,7 +367,7 @@ def list_findings(
         before = (cursor_time(moment), cursor_uuid(finding_id))
     with svc.database.project(project_id) as uow:
         rows = queries.list_findings(uow, limit=limit + 1, statuses=status, severities=severity,
-                                     asset_id=asset_id, before=before)
+                                     asset_id=asset_id, before=before, owner=owner, confidence=confidence, priority=priority)
     page, more = rows[:limit], len(rows) > limit
     return schemas.Page[schemas.FindingOut](
         items=[schemas.finding_out(finding) for finding in page],
@@ -393,7 +405,8 @@ def transition_finding(
             raise NotFound("finding not found")
         # The finding's asset already exists; do not touch its last-seen time.
         store = RepositoryFindingStore(uow, finding.scope_revision_id, asset_for=lambda _target: finding.asset_id)
-        FindingService(store).transition(finding.fingerprint, body.status, _actor(ctx), body.reason)
+        FindingService(store).transition(finding.fingerprint, body.status, _actor(ctx), body.reason,
+                                         risk_expires_at=body.risk_expires_at)
         return _finding_detail(uow, finding_id)
 
 
@@ -419,6 +432,9 @@ def _load_evidence(svc: ApiServices, project_id: UUID, evidence_id: UUID) -> tup
         evidence = uow.evidence.get(evidence_id)
     if evidence is None:
         raise NotFound("evidence not found")
+    from watchtower.services.maintenance import expired
+    if expired(evidence, svc.settings):
+        raise NotFound("evidence retention has expired; metadata remains in the finding history")
     # Blob URIs name their project; refuse one that points elsewhere even if
     # a row were ever written with a foreign URI.
     if not evidence.storage_uri.startswith(f"fs:{project_id}/"):
@@ -495,8 +511,13 @@ def list_runs(
 def start_run(project_id: UUID, body: schemas.StartRunIn, ctx: Context, svc: Services) -> schemas.RunOut:
     """Queue a monitoring run pinned to the current scope revision."""
     ctx.require(Permission.OPERATE)
+    options = {}
+    if body.idempotency_key is not None:
+        options["idempotency_key"] = body.idempotency_key
+    if body.reuse_active:
+        options["reuse_active"] = True
     summary = _runs(svc).start_run(project_id, actor=ctx, targets=body.targets, phases=body.phases,
-                                   reason=body.reason)
+                                   reason=body.reason, **options)
     return schemas.run_out(summary)
 
 
@@ -577,6 +598,8 @@ def create_app(
     _install_security_headers(app)
     app.include_router(router)
     app.include_router(project_router)
+    from watchtower.api.operations import router as operations_router
+    app.include_router(operations_router)
 
     root = frontend or default_frontend_root()
     if (root / "index.html").is_file():

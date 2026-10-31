@@ -6,13 +6,56 @@
   "description": "A readable /.env file commonly contains database passwords, API keys, and application secrets.",
   "severity": "critical",
   "confidence": "firm",
-  "request": {"method": "GET", "path": "/.env"},
-  "match": {
-    "status": [200],
-    "body_all": ["(?m)^\\s*(?:export\\s+)?[A-Z][A-Z0-9_]{2,}\\s*=\\s*\\S"],
-    "body_any": ["(?m)^\\s*(?:APP_|DB_|DATABASE_|REDIS_|MAIL_|AWS_|SECRET|API_)[A-Z0-9_]*\\s*="],
-    "body_none": ["(?i)<html", "(?i)<!doctype"]
+  "request": {
+    "method": "GET",
+    "path": "/.env"
   },
-  "negative_status": [200, 301, 302, 303, 307, 308, 401, 403, 404, 410],
-  "evidence": {"profile": "env"}
+  "match": {
+    "status": [
+      200
+    ],
+    "body_all": [
+      "(?m)^\\s*(?:export\\s+)?[A-Z][A-Z0-9_]{2,}\\s*=\\s*\\S"
+    ],
+    "body_any": [
+      "(?m)^\\s*(?:APP_|DB_|DATABASE_|REDIS_|MAIL_|AWS_|SECRET|API_)[A-Z0-9_]*\\s*="
+    ],
+    "body_none": [
+      "(?i)<html",
+      "(?i)<!doctype"
+    ]
+  },
+  "negative_status": [
+    200,
+    301,
+    302,
+    303,
+    307,
+    308,
+    401,
+    403,
+    404,
+    410
+  ],
+  "evidence": {
+    "profile": "env"
+  },
+  "execution_policy": {
+    "source": "WatchTower native rule",
+    "license": "MIT",
+    "engine": "watchtower-native/1",
+    "protocol": "http",
+    "requests_per_endpoint": 1,
+    "writes_data": false,
+    "browser": false,
+    "executes_code": false,
+    "external_callbacks": false,
+    "credentials": false,
+    "required_permissions": [
+      "operate",
+      "authorized_scope"
+    ],
+    "evidence_policy": "bounded-redacted-excerpt",
+    "remediation": "Remove environment files from the web root, restrict access, and rotate exposed credentials."
+  }
 }

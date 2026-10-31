@@ -456,68 +456,10 @@ def platform_ready(root, python, env):
 
 def platform_wizard(root=ROOT):
     banner()
-    say("\nPlatform setup")
-    say("Choose a project, publish the scope you are authorized to test, and monitor it.")
     python = python_executable(root)
     env = runtime_environment(root, python)
     platform_ready(root, python, env)
-    profile = PROFILES[choose("Settings profile", {key: label for key, (_, label) in PROFILES.items()})][0]
-    slug = validated("Project (slug)", project_slug, env.get("WATCHTOWER_PROJECT", "acme-lab" if profile == "lab" else ""))
-    token_file = Path(env.get("WATCHTOWER_TOKEN_FILE", str(DEFAULT_TOKEN_FILE))).expanduser()
-    env = dict(env, WATCHTOWER_PROFILE=profile, WATCHTOWER_PROJECT=slug)
-    cli = ["--token-file", str(token_file)]
-
-    if not token_file.exists():
-        say(f"\nNo API token at {token_file}.")
-        if not yes_no(f"Create project {slug} (if needed) with you as owner, and save your token there?"):
-            say("Cancelled. Nothing was changed.")
-            return 0
-        owner = validated("Your name (recorded as the project owner)", required_text)
-        if platform_cli(root, python, env, "bootstrap", slug, "--owner", owner, "--save-token", str(token_file)):
-            raise RuntimeError("Could not create the project. Check the database settings and the output above.")
-    if platform_cli(root, python, env, *cli, "status"):
-        raise RuntimeError("Could not open the project with this token.")
-
-    target = choose("Target", {"1": "Authorize a domain", "2": "Keep the current scope"})
-    if target == "1":
-        domain = validated("Target domain (example.com)", domain_name, "acme-lab.test" if profile == "lab" else "")
-        excluded = validated(
-            "Excluded subdomains (comma-separated exact names; - for none)",
-            lambda value: exclusions(value or "-", domain),
-        )
-        say("\nScanning needs written authorization for every target. Record where it comes from.")
-        kind = AUTHORIZATIONS[choose("Authorization", {key: label for key, (_, label) in AUTHORIZATIONS.items()})][0]
-        reference = validated("Reference (program URL, contract or ticket id)", required_text)
-        granted_by = validated("Granted by (person or organization)", required_text)
-        say(f"\nScope: {domain} and *.{domain}" + (f", excluding {', '.join(excluded)}" if excluded else ""))
-        if not yes_no(f"Do you confirm that {granted_by} authorized you to test all of it?", default=False):
-            say("Cancelled. The scope was not changed.")
-            return 0
-        command = [*cli, "scope", "publish", "--include", domain, "--include", f"*.{domain}",
-                   "--authorization-kind", kind, "--reference", reference, "--granted-by", granted_by,
-                   "--i-am-authorized"]
-        for name in excluded:
-            command += ["--exclude", name]
-        if platform_cli(root, python, env, *command):
-            raise RuntimeError("The scope was not published. See the message above.")
-
-    action = choose("What next?", {
-        "1": "Start a run and watch it",
-        "2": "Watch for changes and alerts",
-        "3": "Open the dashboard (http://127.0.0.1:8080)",
-        "4": "Exit",
-    })
-    if action == "4":
-        return 0
-    if action == "3":
-        say("Sign in with the token in " + str(token_file) + ". Press Ctrl+C to stop the server.")
-        return platform_cli(root, python, env, *cli, "serve")
-    work = yes_no("Run the scan jobs in this terminal (no separate worker)?", default=profile != "production")
-    extra = ["--work"] if work else []
-    if action == "1":
-        return platform_cli(root, python, env, *cli, "run", "start", "--reason", "started from launcher",
-                            "--watch", *extra)
-    return platform_cli(root, python, env, *cli, "watch", *extra)
+    return subprocess.run([python, str(root / "terminal_ui.py")], cwd=root, env=env).returncode
 
 
 def main(argv=None):

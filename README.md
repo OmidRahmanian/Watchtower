@@ -2,7 +2,7 @@
 
 **Keep watch over your attack surface as it changes.**
 
-WatchTower is a Python reconnaissance and attack surface monitoring toolkit for security researchers and bug bounty workflows. It brings recurring subdomain discovery, DNS resolution, HTTP service checks, and Nuclei scans into one workflow, with findings stored in MongoDB and notifications delivered through Discord and Telegram.
+WatchTower monitors authorized attack surfaces: discover subdomains, keep DNS and HTTP inventory, compare changes, investigate evidence and verify fixes through retests. The platform uses PostgreSQL, a CLI and dashboard, durable jobs and grouped alerts. The original MongoDB toolkit remains available as legacy discovery.
 
 Use it to build an inventory of your targets, discover newly exposed services, and follow changes over time.
 
@@ -22,6 +22,10 @@ flowchart LR
 - **Try it with Docker only:** `lab/lab.sh demo` runs the whole journey against targets on an isolated network. See [lab/README.md](lab/README.md).
 - **Install it:** see [docs/installation.md](docs/installation.md).
 - **API:** see [docs/api.md](docs/api.md).
+- **Investigation, feeds, exports, request limits and retention:** see [docs/operations.md](docs/operations.md).
+- **Blueprint implementation map and remaining release gates:** see [docs/blueprint-coverage.md](docs/blueprint-coverage.md).
+- **Design and security boundaries:** [architecture](docs/architecture.md), [threat model](docs/threat-model.md), [private reporting](SECURITY.md).
+- **License:** [MIT](LICENSE); dependencies and external tools retain [their own licenses](THIRD_PARTY_NOTICES.md).
 - **What it covers, what it does not, and how each step is tested:** see [docs/coverage.md](docs/coverage.md).
 
 ```bash
@@ -73,7 +77,7 @@ python3 launcher.py
 
 The launcher opens with a WatchTower ASCII eye banner, with a red pupil in colour terminals and a compact version for narrow windows. Preview it with `python3 launcher.py --banner`. Set `NO_COLOR=1` for plain text.
 
-The launcher first asks which mode to use. **Platform** (`python3 launcher.py --platform`) picks a settings profile and project and records the authorization for your domain before publishing scope. It then starts a run and follows it, watches for alerts, or opens the dashboard; see [docs/installation.md](docs/installation.md#the-guided-launcher). **Legacy discovery** (`python3 launcher.py --legacy`) is the setup described below.
+The launcher first asks which mode to use. **Platform** (`python3 launcher.py --platform`) opens a persistent home menu for scans, progress, inventory, findings, scope, alerts and the dashboard. Select an accessible project by number or create one; your project, profile and token-file path are remembered. **Start scan** queues one run and opens a separate terminal window for its worker and progress, leaving Home available. See the [terminal guide](docs/terminal.md). **Legacy discovery** (`python3 launcher.py --legacy`) is the setup described below.
 
 The launcher uses the project's virtual environment when one is available. Choose a saved target or enter a domain, add an optional report URL and exact subdomain exclusions, and select a discovery schedule:
 

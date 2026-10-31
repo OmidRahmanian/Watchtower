@@ -6,12 +6,53 @@
   "description": "A readable /.git/config usually means the whole repository, including history and secrets, can be downloaded.",
   "severity": "high",
   "confidence": "firm",
-  "request": {"method": "GET", "path": "/.git/config"},
-  "match": {
-    "status": [200],
-    "body_all": ["(?m)^\\s*\\[core\\]\\s*$", "(?m)^\\s*repositoryformatversion\\s*="],
-    "body_none": ["(?i)<html"]
+  "request": {
+    "method": "GET",
+    "path": "/.git/config"
   },
-  "negative_status": [200, 301, 302, 303, 307, 308, 401, 403, 404, 410],
-  "evidence": {"profile": "default"}
+  "match": {
+    "status": [
+      200
+    ],
+    "body_all": [
+      "(?m)^\\s*\\[core\\]\\s*$",
+      "(?m)^\\s*repositoryformatversion\\s*="
+    ],
+    "body_none": [
+      "(?i)<html"
+    ]
+  },
+  "negative_status": [
+    200,
+    301,
+    302,
+    303,
+    307,
+    308,
+    401,
+    403,
+    404,
+    410
+  ],
+  "evidence": {
+    "profile": "default"
+  },
+  "execution_policy": {
+    "source": "WatchTower native rule",
+    "license": "MIT",
+    "engine": "watchtower-native/1",
+    "protocol": "http",
+    "requests_per_endpoint": 1,
+    "writes_data": false,
+    "browser": false,
+    "executes_code": false,
+    "external_callbacks": false,
+    "credentials": false,
+    "required_permissions": [
+      "operate",
+      "authorized_scope"
+    ],
+    "evidence_policy": "bounded-redacted-excerpt",
+    "remediation": "Remove repository metadata from the web root and deny access to dot directories."
+  }
 }

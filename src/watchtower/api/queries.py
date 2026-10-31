@@ -31,6 +31,9 @@ def list_assets(
     kind: AssetKind | None = None,
     search: str | None = None,
     after: tuple[str, str] | None = None,
+    owner: str | None = None,
+    tag: str | None = None,
+    technology: str | None = None,
 ) -> list[Asset]:
     """Assets ordered by ``(kind, value)``; ``after`` is the last row's ``(kind, value)``."""
     query = select(assets).where(assets.c.project_id == uow.project_id)
@@ -38,6 +41,12 @@ def list_assets(
         query = query.where(assets.c.kind == AssetKind(kind).value)
     if search:
         query = query.where(assets.c.value.contains(search.lower(), autoescape=True))
+    if owner is not None:
+        query = query.where(assets.c.attributes["owner"].astext == owner)
+    if tag is not None:
+        query = query.where(assets.c.attributes["tags"].contains([tag]))
+    if technology:
+        query = query.where(assets.c.attributes["last_http"]["headers"]["server"].astext.ilike("%" + technology + "%"))
     if after is not None:
         query = query.where(tuple_(assets.c.kind, assets.c.value) > tuple_(*after))
     rows = uow.connection.execute(query.order_by(assets.c.kind, assets.c.value).limit(limit))
@@ -52,6 +61,9 @@ def list_findings(
     severities: Sequence[Severity] = (),
     asset_id: UUID | None = None,
     before: tuple[datetime, UUID] | None = None,
+    owner: str | None = None,
+    confidence: str | None = None,
+    priority: str | None = None,
 ) -> list[Finding]:
     """Newest activity first, ordered by ``(last_seen_at, id)`` descending."""
     query = select(findings).where(findings.c.project_id == uow.project_id)
@@ -61,6 +73,13 @@ def list_findings(
         query = query.where(findings.c.severity.in_([Severity(s).value for s in severities]))
     if asset_id is not None:
         query = query.where(findings.c.asset_id == asset_id)
+    if owner is not None:
+        query = query.where(findings.c.details["owner"].astext == owner)
+    if confidence:
+        query = query.where(findings.c.details["confidence"].astext == confidence)
+    if priority:
+        query = query.where(func.coalesce(findings.c.details["priority_override"]["level"].astext,
+                                          findings.c.details["priority"]["level"].astext) == priority)
     if before is not None:
         moment, finding_id = before
         query = query.where(
@@ -112,7 +131,7 @@ def counts(uow: PgProjectUnitOfWork) -> dict[str, Any]:
     open_by_severity: Counter[str] = Counter()
     for status, severity, count in finding_rows:
         by_status[status] += count
-        if status in (FindingStatus.OPEN, FindingStatus.TRIAGED):
+        if status in (FindingStatus.OPEN, FindingStatus.TRIAGED, FindingStatus.IN_PROGRESS):
             open_by_severity[severity] += count
     return {
         "assets": {kind: count for kind, count in asset_rows},

@@ -75,6 +75,7 @@ class ProbeTests(unittest.TestCase):
 
     def prober(self, scope, **kwargs):
         kwargs.setdefault("resolve", self.resolver())
+        kwargs.setdefault("max_redirects", 3)  # redirect tests explicitly enable following
         return HttpProber(scope, timeout=3.0, clock=StepClock(), **kwargs)
 
     def test_records_status_title_headers_and_body_hash(self):
@@ -85,6 +86,13 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result["headers"], {"server": "fixture", "content-length": "49"})
         self.assertEqual(len(result["body_sha256"]), 64)
         self.assertEqual(server.requests, [(f"www.example.com:{server.port}", "/")])
+
+    def test_redirects_are_disabled_by_default(self):
+        server = self.serve({"/": (302, {"Location": "/next"}, b""), "/next": (200, {}, b"unexpected")})
+        result = HttpProber(FakeScope(), resolve=self.resolver()).probe("www.example.com", scheme="http", port=server.port)
+        self.assertEqual(result["status_code"], 302)
+        self.assertFalse(result["redirects"][0]["followed"])
+        self.assertEqual(len(server.requests), 1)
 
     def test_unauthorized_target_gets_no_dns_and_no_traffic(self):
         server = self.serve({"/": (200, {}, b"")})
@@ -250,7 +258,7 @@ class RealPolicyRedirectTests(unittest.TestCase):
         self.server = CountingServer(routes)
         self.addCleanup(self.server.close)
         policy = scope_policy(ports=f"80,443,{self.server.port}")
-        prober = HttpProber(policy, resolve=lambda host, port: [self.PUBLIC], timeout=3.0)
+        prober = HttpProber(policy, resolve=lambda host, port: [self.PUBLIC], timeout=3.0, max_redirects=3)
         return prober.probe("www.example.com", scheme="http", port=self.server.port)
 
     def test_in_scope_redirect_is_followed(self):

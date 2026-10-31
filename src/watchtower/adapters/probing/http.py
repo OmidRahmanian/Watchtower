@@ -133,7 +133,7 @@ class HttpProber:
         resolve: Callable[[str, int], Iterable[str]] = system_resolve,
         timeout: float = 10.0,
         max_body_bytes: int = 256 * 1024,
-        max_redirects: int = 3,
+        max_redirects: int = 0,
         retry_unverified_tls: bool = True,
         clock: Callable[[], datetime] = utcnow,
     ) -> None:
@@ -167,6 +167,11 @@ class HttpProber:
 
         host = hostname
         for followed in range(self.max_redirects + 1):
+            check_url = getattr(self.guard, "check_url", None)
+            if check_url is not None:
+                decision = check_url(url)
+                if not decision:
+                    return {**observation, "outcome": "unauthorized", "error": {"kind": "unauthorized", "message": explain(decision)}}
             try:
                 ip = self._approved_address(host, port)
                 response = self._fetch(host, ip, port, scheme, urlsplit(url))
@@ -252,6 +257,7 @@ class HttpProber:
         else:
             connection = PinnedHTTPSConnection(host, ip, port, self.timeout, context)
         deadline = time.monotonic() + self.timeout * 3
+        started = time.monotonic()
         try:
             connection.request("GET", path, headers={"User-Agent": USER_AGENT, "Accept": "*/*", "Connection": "close"})
             tls = _tls_details(connection.sock, context.verify_mode != ssl.CERT_NONE) if context else None
@@ -270,6 +276,7 @@ class HttpProber:
             return {
                 "ip": ip,
                 "status_code": response.status,
+                "response_time_ms": round((time.monotonic() - started) * 1000, 3),
                 "title": _title(body),
                 "headers": headers,
                 "body_sha256": hashlib.sha256(body).hexdigest(),

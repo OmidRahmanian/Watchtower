@@ -11,7 +11,7 @@ Project routes live under `/projects/{project_id}`. For each request the API res
 | Permission | Roles | Routes |
 | --- | --- | --- |
 | `view` | viewer, operator, owner | every `GET`, `POST /scope/check` |
-| `operate` | operator, owner | `POST /runs`, `POST /runs/{id}/cancel`, `POST /findings/{id}/status`, `POST /findings/{id}/retest` |
+| `operate` | operator, owner | `POST /runs`, `POST /runs/{id}/cancel`, `POST /findings/{id}/status`, `POST /findings/{id}/retest`, asset/finding `PATCH`, change acknowledgement and prioritization |
 | `manage_scope` | owner | `POST /scope`, `POST /scope/{revision}/revoke` |
 
 Two cases return `404 not_found`, not `403`, so the API does not reveal which projects exist: a project you are not a member of, and a token restricted to a different project.
@@ -27,6 +27,7 @@ Errors are JSON: `{"error": "<code>", "detail": "<message>"}`.
 | 404 | `not_found` | no such project (for you), asset, finding, evidence or run |
 | 409 | `scope_violation` | the action needs authorization the current scope does not give, such as a run with no published scope |
 | 409 | `invalid_transition` | a workflow change the finding lifecycle forbids, such as marking a finding resolved by hand |
+| 409 | `request_conflict` | a run idempotency key is reused with different arguments or scope |
 | 409 | `run_cancelled` | work for a run that was cancelled |
 | 422 | `invalid_request`, `invalid_scope`, `invalid_target`, `invalid_cursor` | the request does not validate |
 | 503 | `runs_unavailable` | the monitoring runtime is not installed on this server |
@@ -47,11 +48,11 @@ Listings return `{"items": [...], "next_cursor": "..." | null}`. Pass `cursor` a
 | `POST /projects/{id}/scope` | publish a revision: `includes`, `excludes`, `permitted_ports`, `authorization {kind, reference, granted_by, valid_from?, valid_until?}`, and `attest_authorized: true` |
 | `POST /projects/{id}/scope/{revision}/revoke` | `{"reason": ...}` |
 | `POST /projects/{id}/scope/check` | `{"target": ..., "port"?: ...}`; returns the decision and sends nothing |
-| `GET /projects/{id}/assets` | inventory; filter with `kind` and `search` |
+| `GET /projects/{id}/assets` | inventory; filter with `kind`, `search`, `owner`, `tag`, `technology` |
 | `GET /projects/{id}/assets/{asset}` | one asset with its recent observations |
-| `GET /projects/{id}/findings` | filter with `status` and `severity` (both repeatable) and `asset_id` |
+| `GET /projects/{id}/findings` | filter with `status` and `severity` (both repeatable) and `asset_id`, `owner`, `confidence`, `priority` |
 | `GET /projects/{id}/findings/{finding}` | the full record: detection, remediation, history and evidence list |
-| `POST /projects/{id}/findings/{finding}/status` | triage: `{"status": "triaged" \| "open" \| "accepted_risk" \| "false_positive", "reason": ...}` |
+| `POST /projects/{id}/findings/{finding}/status` | triage: `{"status": "triaged" \| "in_progress" \| "open" \| "accepted_risk" \| "false_positive", "reason": ...}` |
 | `POST /projects/{id}/findings/{finding}/retest` | queue a retest of this finding's check and endpoint |
 | `GET /projects/{id}/evidence/{evidence}` | evidence metadata, plus its redacted content as JSON data |
 | `GET /projects/{id}/evidence/{evidence}/download` | the stored bytes as an attachment (below) |
@@ -99,3 +100,40 @@ A browser therefore saves the file instead of rendering it, even if captured con
 ## Response headers
 
 Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and a Content Security Policy that allows only same-origin scripts and styles, with no inline code. API responses also carry `Cache-Control: no-store`.
+
+## Investigation and execution controls
+
+All paths below share `/projects/{id}`. See the OpenAPI schemas for exact fields.
+
+| Method and path | Purpose |
+| --- | --- |
+| `PATCH /assets/{asset}` | owner, tags, importance, human ownership state; operator/owner |
+| `GET /assets/{asset}/timeline` | paginated observations |
+| `GET /candidates` | provenance and live authorization status, separately from human ownership |
+| `PATCH /findings/{finding}` | owner, remediation/mitigation notes, priority override and reason |
+| `POST /findings/{finding}/prioritize` | recompute explainable priority from cached intelligence |
+| `GET /changes` | paginated phase changes and latest acknowledgement |
+| `POST /changes/{change}/acknowledge` | append a reason and actor without rewriting a snapshot |
+| `GET /exports` | `dataset=assets|findings`, `format=json|csv`, bounded `limit` and `cursor` |
+| `GET /intelligence` | freshness and reviewable applicability; asset paging via `after_asset` |
+| `GET /settings` | redacted effective settings and rule approvals; read only |
+
+Publishing scope accepts `execution_policy`: `allowed_schemes`, `allowed_paths`,
+`excluded_paths`, `allowed_check_kinds`, `max_requests_per_run`. Path prefixes
+are canonical and exclusions take precedence. `/scope/check` accepts an
+absolute HTTP(S) URL to check these restrictions without sending traffic.
+Authorization dates must contain a timezone. See [operations](operations.md).
+
+`POST /runs` accepts `idempotency_key` and `reuse_active`. A retry with the same
+key and payload returns the same run; a changed payload/scope returns 409.
+Equivalent active-run reuse is opt-in and still constrained to one project and
+scope revision. Dashboard and terminal requests use both controls.
+
+Status transitions accept `risk_expires_at` for a future, time-limited accepted
+risk. Owner maintenance returns expired exceptions to triage; it never marks a
+finding fixed. Feed refresh and maintenance remain owner CLI operations.
+
+Exports omit evidence and secrets, escape CSV formulas, and return downloads
+with private, inert headers. JSON includes `next_cursor`; CSV uses
+`X-Next-Cursor`. Evidence downloads past the configured retention period return
+404 while historical metadata remains available.

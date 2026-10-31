@@ -5,15 +5,12 @@
 # Isolation:
 # * PostgreSQL and RabbitMQ sit on the internal "backend" network, which has
 #   no route out; only the workers and the notifier join it.
-# * Scanning workers additionally join "egress" to reach in-scope targets and
-#   passive sources; the notifier joins "notify" to reach webhooks. Beat needs
-#   only the backend.
-# * No container mounts the Docker socket, runs privileged, or uses the host
-#   network; every runtime container drops all capabilities, runs as an
-#   unprivileged user on a read-only root filesystem, and installs the
-#   in-process egress guard (watchtower.workers.egress), which refuses
-#   loopback, link-local, metadata and private destinations other than the
-#   database, the broker and the configured resolvers.
+# * Workers and notifier share the egress guard's network namespace. Beat
+#   uses only backend. The guard atomically installs IPv4 OUTPUT restrictions
+#   and denies IPv6; it alone holds NET_ADMIN. Runtime processes have no caps.
+# * No Docker socket, privileged container or host networking is used.
+#   Runtime containers use an unprivileged user and read-only root filesystem.
+#   Python's guard adds hostname/connection checks to the namespace firewall.
 name: watchtower-platform
 
 x-runtime: &runtime
@@ -36,8 +33,33 @@ x-runtime: &runtime
   depends_on:
     postgres: {condition: service_healthy}
     rabbitmq: {condition: service_healthy}
+    egress-guard: {condition: service_healthy}
 
 services:
+  # The only NET_ADMIN container. Scanner/notifier processes share this
+  # namespace without capabilities, so external binaries cannot bypass the
+  # private/metadata destination restrictions in Python by opening sockets.
+  egress-guard:
+    build:
+      context: ..
+      dockerfile: deploy/egress.Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=1m"]
+    environment:
+      WATCHTOWER_ALLOWED_INFRA: postgres:5432,rabbitmq:5672
+    networks: [backend, egress]
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
   postgres:
     networks: [backend]
 
@@ -62,14 +84,14 @@ services:
               "--prefetch-multiplier", "1", "--without-gossip", "--without-mingle"]
     volumes:
       - ../data/evidence:/app/data/evidence
-    networks: [backend, egress]
+    network_mode: "service:egress-guard"
     stop_grace_period: 90s  # in-flight jobs are requeued on SIGTERM
 
   notifier:
     <<: *runtime
     command: ["celery", "-A", "watchtower.workers.celery_app", "worker", "--queues", "watchtower.notify",
               "--concurrency", "1", "--prefetch-multiplier", "1", "--without-gossip", "--without-mingle"]
-    networks: [backend, notify]
+    network_mode: "service:egress-guard"
 
   beat:
     <<: *runtime
@@ -80,4 +102,3 @@ networks:
   backend:
     internal: true
   egress: {}
-  notify: {}

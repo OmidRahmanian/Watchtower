@@ -138,6 +138,14 @@ def validate_definition(rule: dict) -> None:
     _require(rule.get("severity") in SEVERITIES, f"{rule_id}: invalid severity")
     _require(rule.get("confidence") in CONFIDENCES, f"{rule_id}: invalid confidence")
     _require(bool(rule.get("title")), f"{rule_id}: missing title")
+    execution = rule.get("execution_policy", {})
+    _require(execution.get("engine") == "watchtower-native/1", f"{rule_id}: unsupported execution engine")
+    _require(bool(execution.get("source") and execution.get("license") and execution.get("remediation")),
+             f"{rule_id}: source, license and remediation metadata are required")
+    _require(execution.get("requests_per_endpoint") == (1 if rule["kind"] == "http" else 0),
+             f"{rule_id}: request budget does not match the native engine")
+    for effect in ("writes_data", "browser", "executes_code", "external_callbacks", "credentials"):
+        _require(execution.get(effect) is False, f"{rule_id}: unsupported execution effect {effect}")
     for cve in rule.get("cves", []):
         _require(bool(re.match(r"^CVE-\d{4}-\d{4,}$", cve)), f"{rule_id}: invalid CVE {cve}")
     if rule["kind"] == "http":

@@ -84,7 +84,7 @@ retest_open() {
 }
 
 pending_note() {
-    if ! compose exec -T watchtower python -m watchtower.adapters.checks >/dev/null 2>&1; then
+    if ! compose exec -T watchtower python -c 'from watchtower.adapters.checks import load_manifest; import sys; sys.exit(bool(load_manifest().pending))' >/dev/null 2>&1; then
         echo
         echo "Note: detection rules are pending maintainer approval, so checks report 'did not run' and no"
         echo "finding is opened. lab/README.md explains how a maintainer approves a rule for this demo."

@@ -8,7 +8,7 @@ is passed through as data; clients must render it as text.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -26,7 +26,9 @@ from watchtower.domain.models import (
     RunPhase,
     Severity,
 )
-from watchtower.domain.scope import AuthorizationKind, ScopeDecision, ScopeRevision
+from watchtower.domain.scope import AuthorizationKind, ScopeDecision, ScopeRevision, ScopeExecution
+from dataclasses import asdict
+from pydantic import model_validator
 from watchtower.security.auth import ROLE_PERMISSIONS, ProjectContext
 from watchtower.services.findings import FindingRecord
 
@@ -91,6 +93,22 @@ class AuthorizationIn(_In):
         return value
 
 
+AnnotatedPath = Annotated[str, Field(min_length=1, max_length=2048)]
+
+
+class ScopeExecutionIn(_In):
+    allowed_schemes: tuple[Literal["http", "https"], ...] = ("https", "http")
+    allowed_paths: tuple[AnnotatedPath, ...] = ("/",)
+    excluded_paths: tuple[AnnotatedPath, ...] = ()
+    allowed_check_kinds: tuple[Literal["http", "component"], ...] = ("http", "component")
+    max_requests_per_run: int = Field(default=10000, ge=1, le=10000000)
+
+    @model_validator(mode="after")
+    def _valid(self):
+        ScopeExecution(**self.model_dump())
+        return self
+
+
 class PublishScopeIn(_In):
     includes: list[str] = Field(min_length=1, max_length=500)
     excludes: list[str] = Field(default_factory=list, max_length=500)
@@ -99,6 +117,7 @@ class PublishScopeIn(_In):
     notes: str = Field(default="", max_length=4000)
     # The caller states that the authorization covers every include rule.
     attest_authorized: Literal[True]
+    execution_policy: ScopeExecutionIn = Field(default_factory=ScopeExecutionIn)
 
 
 class RevokeScopeIn(_In):
@@ -143,6 +162,7 @@ class ScopeRevisionOut(_Out):
     created_by: UUID | None
     notes: str
     revocation: RevocationOut | None
+    execution_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScopeOut(_Out):
@@ -163,6 +183,7 @@ def revision_out(revision: ScopeRevision) -> ScopeRevisionOut:
     auth = revision.authorization
     revocation = revision.revocation
     return ScopeRevisionOut(
+        execution_policy=asdict(revision.execution_policy),
         id=revision.id, number=revision.number,
         rules=[ScopeRuleOut(effect=r.effect.value, kind=r.kind.value, pattern=r.pattern,
                             ports=str(r.ports) if r.ports is not None else None, note=r.note)
@@ -297,6 +318,11 @@ class FindingOut(_Out):
     detection: DetectionOut
     remediation: Remediation
     priority: dict[str, Any] | None
+    owner: str = ""
+    remediation_notes: str = ""
+    mitigation_notes: str = ""
+    risk_expires_at: datetime | None = None
+    priority_override: dict[str, Any] | None = None
 
 
 class FindingDetailOut(FindingOut):
@@ -314,6 +340,7 @@ class FindingDetailOut(FindingOut):
 class TransitionIn(_In):
     status: FindingStatus
     reason: str = Field(default="", max_length=4000)
+    risk_expires_at: datetime | None = None
 
 
 class RetestIn(_In):
@@ -338,7 +365,9 @@ def _finding_fields(finding: Finding, record: FindingRecord) -> dict[str, Any]:
         detection=DetectionOut(state=detection.state, last_outcome=detection.last_outcome.value,
                                last_outcome_at=detection.last_outcome_at,
                                last_conclusive_at=detection.last_conclusive_at),
-        remediation=remediation(record)[0], priority=record.priority,
+        remediation=remediation(record)[0], priority=record.priority, owner=record.owner,
+        remediation_notes=record.remediation_notes, mitigation_notes=record.mitigation_notes,
+        risk_expires_at=record.risk_expires_at, priority_override=record.priority_override,
     )
 
 
@@ -371,6 +400,8 @@ class StartRunIn(_In):
     targets: list[str] | None = Field(default=None, max_length=100)
     phases: list[RunPhase] | None = None
     reason: str = Field(default="", max_length=2000)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    reuse_active: bool = False
 
 
 class CancelRunIn(_In):

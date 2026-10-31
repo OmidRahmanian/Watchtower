@@ -9,7 +9,7 @@ statement_timeout_ms = 30000
 
 [scope]
 default_permitted_ports = "80,443"
-max_redirects = 5
+max_redirects = 0
 allow_https_downgrade = false
 # Only enable for internal assessments where private ranges are authorized.
 allow_private_networks = false

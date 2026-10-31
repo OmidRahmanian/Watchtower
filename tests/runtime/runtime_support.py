@@ -164,6 +164,7 @@ def settings(**pipeline) -> Settings:
         "runtime": {"lease_seconds": 30, "heartbeat_seconds": 5},
         "notifications": {"destinations": [{"name": "ops", "kind": "webhook", "url": WEBHOOK}]},
         "pipeline": {"discovery_sources": ["manual"], "seed_file": "seeds.txt", "http_schemes": ["https"],
+                     "check_kinds": ["http"],  # these fixtures exercise HTTP checks; intelligence has separate tests
                      **pipeline},
     })
 
@@ -195,6 +196,9 @@ class Runs:
 
     def run(self, **start):
         summary = self.service.start_run(self.project_id, actor=self.actor, **start)
+        return self.finish(summary.run_id)
+
+    def finish(self, run_id):
         worker, notifier = self.worker(), self.notifier()
         deadline = time.monotonic() + 30
         while True:
@@ -202,9 +206,9 @@ class Runs:
             # run (or a zero-backoff notification retry) has finished.
             worker.run_until_idle()
             notifier.run_until_idle()
-            detail = self.service.get_run(self.project_id, summary.run_id, actor=self.actor)
+            detail = self.service.get_run(self.project_id, run_id, actor=self.actor)
             notifications = self.service.list_notifications(
-                self.project_id, actor=self.actor, run_id=summary.run_id)
+                self.project_id, actor=self.actor, run_id=run_id)
             pending = [n for n in notifications if n.status in (NotificationStatus.PENDING,
                                                                NotificationStatus.SENDING)]
             if detail.summary.status not in ("queued", "running") and not pending:

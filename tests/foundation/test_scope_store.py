@@ -58,7 +58,7 @@ def test_publish_and_authorize(service: ScopeService, project_id: UUID, authoriz
     decision = service.authorize_connection(project_id, "www.example.com", 443, ["10.0.0.1"])
     assert decision.reason is DecisionReason.PROHIBITED_DESTINATION
     redirect = service.authorize_redirect(project_id, "https://www.example.com/", "https://evil.net/", redirects_followed=0)
-    assert redirect.reason is DecisionReason.NOT_IN_SCOPE
+    assert redirect.reason is DecisionReason.REDIRECT_LIMIT  # redirects are disabled unless explicitly enabled
 
 
 def test_new_revision_supersedes(service: ScopeService, project_id: UUID, authorization) -> None:

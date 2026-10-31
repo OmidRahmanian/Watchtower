@@ -213,7 +213,9 @@ def test_authorize_baseline_change_alert_inspect_fix_retest(journey):
     assert (fixed["status"], fixed["remediation"]) == ("resolved", "verified_fixed")
     assert fixed["remediation_event"]["event"] == "resolved"
     runs = j.api("GET", "/runs", viewer).json()["items"]
-    fix_run = runs[0]
+    # Identify the requested retest explicitly: VM wall-clock adjustments can
+    # change creation-time ordering while this synthetic journey is running.
+    fix_run = next(run for run in runs if run["reason"] == "removed .git from web root")
     assert fix_run["kind"] == "retest" and fix_run["status"] == "succeeded"
     assert j.api("GET", f"/runs/{fix_run['run_id']}", viewer).json()["retest_outcome"] == "not_detected"
     resolved_alerts = [a for a in j.api("GET", "/alerts", viewer).json()["items"]

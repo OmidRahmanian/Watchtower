@@ -32,7 +32,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import StrEnum
-from urllib.parse import urljoin
+from urllib.parse import urljoin, unquote
+import posixpath
 from uuid import UUID
 
 from watchtower.domain.errors import InvalidScopeRule, InvalidTarget, ScopeViolation
@@ -214,6 +215,43 @@ class Revocation:
 
 
 @dataclass(frozen=True, slots=True)
+class ScopeExecution:
+    allowed_schemes: tuple[str, ...] = ("https", "http")
+    allowed_paths: tuple[str, ...] = ("/",)
+    excluded_paths: tuple[str, ...] = ()
+    allowed_check_kinds: tuple[str, ...] = ("http", "component")
+    max_requests_per_run: int = 10000
+
+    def __post_init__(self):
+        for name in ("allowed_schemes", "allowed_paths", "excluded_paths", "allowed_check_kinds"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+            if len(getattr(self, name)) > 100:
+                raise InvalidScopeRule("scope execution policy has too many entries")
+        if not self.allowed_schemes or set(self.allowed_schemes) - {"http", "https"}:
+            raise InvalidScopeRule("scope schemes must be http and/or https")
+        if set(self.allowed_check_kinds) - {"http", "component"}:
+            raise InvalidScopeRule("unsupported check class")
+        if not self.allowed_paths or not isinstance(self.max_requests_per_run, int) or not 1 <= self.max_requests_per_run <= 10000000:
+            raise InvalidScopeRule("scope needs allowed paths and a positive bounded request budget")
+        for value in (*self.allowed_paths, *self.excluded_paths):
+            if not isinstance(value, str) or _scope_path(value) != (value.rstrip("/") or "/"):
+                raise InvalidScopeRule("scope paths must be canonical absolute path prefixes without query strings")
+
+
+def _scope_path(value):
+    if not value.startswith("/") or value.startswith("//") or "?" in value or "#" in value:
+        raise InvalidScopeRule("invalid scope path")
+    for _ in range(4):
+        decoded = unquote(value, errors="strict")
+        if decoded == value:
+            break
+        value = decoded
+    if "%" in value or "\\" in value or ";" in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise InvalidScopeRule("ambiguous encoded scope path")
+    return posixpath.normpath(value)
+
+
+@dataclass(frozen=True, slots=True)
 class NewScopeRevision:
     """Input for publishing a revision; the store assigns id, number and timestamps."""
 
@@ -221,6 +259,7 @@ class NewScopeRevision:
     authorization: AuthorizationReference
     permitted_ports: PortSet
     notes: str = ""
+    execution_policy: ScopeExecution = field(default_factory=ScopeExecution)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rules", tuple(self.rules))
@@ -247,6 +286,7 @@ class ScopeRevision:
     created_by: UUID | None = None
     notes: str = ""
     revocation: Revocation | None = None
+    execution_policy: ScopeExecution = field(default_factory=ScopeExecution)
 
     @property
     def includes(self) -> tuple[ScopeRule, ...]:
@@ -277,6 +317,8 @@ class DecisionReason(StrEnum):
     CREDENTIALS_IN_URL = "credentials_in_url"
     REDIRECT_LIMIT = "redirect_limit"
     HTTPS_DOWNGRADE = "https_downgrade"
+    REQUEST_BUDGET = "request_budget_exhausted"
+    PATH_NOT_PERMITTED = "path_not_permitted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +377,7 @@ class ScopePolicy:
             denial_detail = denial_detail or "the project has no scope revision"
         self.project_id = project_id
         self.revision = revision
+        self.execution_policy = revision.execution_policy if revision else ScopeExecution()
         self.destinations = destinations or DestinationPolicy()
         self.max_redirects = max_redirects
         self.allow_https_downgrade = allow_https_downgrade
@@ -439,7 +482,23 @@ class ScopePolicy:
             return self._deny(reason, str(exc), target=None)
         except InvalidTarget as exc:
             return self._deny(DecisionReason.INVALID_TARGET, str(exc), target=None)
-        return self.check_target(parsed.host, port=parsed.port)
+        decision = self.check_target(parsed.host, port=parsed.port)
+        if not decision:
+            return decision
+        execution = self.execution_policy
+        if parsed.scheme not in execution.allowed_schemes:
+            return self._deny(DecisionReason.UNSUPPORTED_SCHEME, "scheme not permitted by scope", parsed.host.value, parsed.port)
+        if execution.allowed_paths != ("/",) or execution.excluded_paths:
+            try:
+                path = _scope_path(parsed.path or "/")
+            except (InvalidScopeRule, UnicodeError):
+                return self._deny(DecisionReason.PATH_NOT_PERMITTED, "ambiguous or invalid path", parsed.host.value, parsed.port)
+            def matches(prefix):
+                prefix = prefix.rstrip("/") or "/"
+                return prefix == "/" or path == prefix or path.startswith(prefix + "/")
+            if any(matches(p) for p in execution.excluded_paths) or not any(matches(p) for p in execution.allowed_paths):
+                return self._deny(DecisionReason.PATH_NOT_PERMITTED, "path not permitted by scope", parsed.host.value, parsed.port)
+        return decision
 
     def check_redirect(
         self, current_url: str, location: str, *, redirects_followed: int

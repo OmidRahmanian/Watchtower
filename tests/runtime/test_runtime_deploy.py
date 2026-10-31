@@ -99,8 +99,11 @@ def test_the_backend_is_internal_and_only_workers_reach_targets():
     assert workers["networks"]["backend"]["internal"] is True
     services = workers["services"]
     assert services["postgres"]["networks"] == ["backend"] and services["rabbitmq"]["networks"] == ["backend"]
-    assert "egress" in services["worker"]["networks"]
-    assert "egress" not in services["notifier"]["networks"] and "egress" not in services["beat"]["networks"]
+    assert services["egress-guard"]["networks"] == ["backend", "egress"]
+    assert services["egress-guard"]["cap_add"] == ["NET_ADMIN"]
+    assert services["worker"]["network_mode"] == "service:egress-guard"
+    assert services["notifier"]["network_mode"] == "service:egress-guard"
+    assert "egress" not in services["beat"]["networks"]
     assert "watchtower.notify" in services["notifier"]["command"]
 
 

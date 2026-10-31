@@ -36,8 +36,18 @@ NAMING_CONVENTION = {
 
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
+# Opaque system-wide counters used only by workers; no target names or secrets.
+request_counters = Table(
+    "request_counters", metadata,
+    Column("key", Text, primary_key=True),
+    Column("window", TIMESTAMP(timezone=True), primary_key=True),
+    Column("count", Integer, nullable=False),
+    CheckConstraint("count >= 0", name="count_nonnegative"),
+)
+
 # Tables protected by the ``project_isolation`` row-level security policy.
 PROJECT_SCOPED_TABLES = (
+    "run_requests",
     "scope_revisions",
     "scope_rules",
     "scope_revocations",
@@ -67,6 +77,16 @@ def _id() -> Column:
 
 def _project() -> Column:
     return Column("project_id", UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+
+
+run_requests = Table(
+    "run_requests", metadata, _project(),
+    Column("request_id", UUID(as_uuid=True), nullable=False),
+    Column("run_id", UUID(as_uuid=True), nullable=False),
+    Column("payload_sha256", Text, nullable=False),
+    _ts("created_at", now=True),
+    PrimaryKeyConstraint("project_id", "request_id"),
+)
 
 
 projects = Table(
@@ -151,6 +171,7 @@ scope_revisions = Table(
     _ts("valid_until", nullable=True),
     Column("permitted_ports", Text, nullable=False),
     Column("notes", Text, nullable=False, server_default=""),
+    Column("execution_policy", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     _ts("created_at", now=True),
     Column("created_by", UUID(as_uuid=True), ForeignKey("principals.id"), nullable=True),
     PrimaryKeyConstraint("id"),
@@ -322,7 +343,7 @@ findings = Table(
     _revision_fk(),
     CheckConstraint("severity IN ('info', 'low', 'medium', 'high', 'critical')", name="severity"),
     CheckConstraint(
-        "status IN ('open', 'triaged', 'resolved', 'false_positive', 'accepted_risk')", name="status"
+        "status IN ('open', 'triaged', 'in_progress', 'resolved', 'false_positive', 'accepted_risk')", name="status"
     ),
 )
 

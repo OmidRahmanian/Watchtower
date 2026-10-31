@@ -30,11 +30,44 @@ from watchtower.domain.scope import (
     ScopePolicy,
     ScopeRevision,
     ScopeRule,
+    ScopeExecution,
     utcnow,
 )
 from watchtower.domain.targets import PortSet
 from watchtower.persistence.database import Database
 from watchtower.security.auth import Permission, ProjectContext
+
+
+class LiveScopePolicy:
+    """A job remains pinned to its revision, but every decision reloads revocation.
+
+    Deliberately bypass the UI policy cache. This prevents a long-running job
+    from retaining permission after the owner revokes or replaces its revision.
+    """
+    def __init__(self, service, project_id, revision_id, limiter=None):
+        self.service, self.project_id, self.revision_id = service, project_id, revision_id
+        self.limiter = limiter
+
+    def request_permit(self, host):
+        if self.limiter is None or self.limiter.acquire(host):
+            return True
+        from watchtower.domain.scope import ScopeDecision, DecisionReason
+        return ScopeDecision(False, DecisionReason.REQUEST_BUDGET, self.project_id, self.revision_id,
+                             target=str(host), detail="request budget exhausted or authorization revoked")
+
+    def __getattr__(self, name):
+        if name.startswith("check_"):
+            def check(*args, **kwargs):
+                decision = getattr(self.service.policy_for_revision(self.project_id, self.revision_id), name)(*args, **kwargs)
+                if decision and name == "check_connection":
+                    permit = self.request_permit(str(getattr(args[0], 'value', args[0])))
+                    if not permit:
+                        return permit
+                    # A minute-window wait must not retain an earlier permission.
+                    decision = getattr(self.service.policy_for_revision(self.project_id, self.revision_id), name)(*args, **kwargs)
+                return decision
+            return check
+        return getattr(self.service.policy_for_revision(self.project_id, self.revision_id), name)
 
 
 class ScopeService:
@@ -142,6 +175,7 @@ class ScopeService:
         actor: ProjectContext | None,
         permitted_ports: PortSet | str | None = None,
         notes: str = "",
+        execution_policy: ScopeExecution | None = None,
     ) -> ScopeRevision:
         """Publish a new revision; it takes effect immediately and supersedes the previous one.
 
@@ -150,6 +184,7 @@ class ScopeService:
         """
         _require(actor, project_id, Permission.MANAGE_SCOPE)
         new = NewScopeRevision(
+            execution_policy=execution_policy or ScopeExecution(max_requests_per_run=self._settings.max_requests_per_run),
             rules=tuple(rule if isinstance(rule, ScopeRule) else ScopeRule.parse(rule) for rule in rules),
             authorization=authorization,
             permitted_ports=PortSet.parse(permitted_ports or self._settings.default_permitted_ports),
